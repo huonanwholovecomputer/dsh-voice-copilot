@@ -1,0 +1,28 @@
+{
+  "hotkey": "ctrl+alt+j",
+  "data_dir": "C:/Users/<你的用户名>/.dsh/voice-copilot",
+  "model": "",
+  "tokens": "",
+  "language": "zh",
+  "stt_engine": "sensevoice",
+  "stt_shadow": false,
+  "stt_shadow_engine": "firered",
+  "stt_threads": 4,
+  "stt_provider": "cpu",
+  "firered_model_dir": "",
+  "firered_ctc_model_dir": "",
+  "max_seconds": 20,
+  "wake": true,
+  "wake_words": [
+    "小印",
+    "小音",
+    "小因",
+    "小应",
+    "小银",
+    "晓印",
+    "肖印"
+  ],
+  "pos": null,
+  "margin": 24,
+  "idle_hide_seconds": 0
+}

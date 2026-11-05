@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-preset-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH agent preset 示例：一条 preset 声明 + 一段人设 + 按需挂载的工具，可选接一个 MCP stdio 服务。",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

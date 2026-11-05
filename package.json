@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-voice-copilot",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH voice assistant: a floating always-on-top window with wake word, speech-to-text, a dedicated session, and spoken-style replies.",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "autostart.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "desktop/main.js",
+    "desktop/preload.js",
+    "desktop/package.json",
+    "desktop/lib/**",
+    "desktop/ui/**",
+    "desktop/assets/**",
+    "desktop/data/**"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "dsh-voice-copilot-window",
+  "version": "0.2.0",
+  "private": true,
+  "description": "小印浮窗（Electron helper：透明置顶窗口 + 托盘 + 本地唤醒/识别），由 @local/dsh-voice-copilot 插件拉起。",
+  "main": "main.js"
+}

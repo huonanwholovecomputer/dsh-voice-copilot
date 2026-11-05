@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>语音助手</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 整块卡片：窗口 720×520，四周留 12px 给阴影 -->
+  <div class="card" id="card" data-phase="sleeping">
+
+    <!-- 头部：整条可拖动；按钮单独 no-drag -->
+    <header class="titlebar" id="titlebar">
+      <span class="dot" id="dot" aria-hidden="true"></span>
+      <h1 class="brand" id="brand">语音助手</h1>
+      <span class="timer" id="timer">0:00</span>
+
+      <span class="hint" id="hint">
+        <span class="hint-text" id="hintText"></span>
+        <button class="retry" id="micRetry" type="button" title="重新申请麦克风">重试</button>
+      </span>
+
+      <div class="actions">
+        <button class="pill" id="backToSession" type="button">回到会话</button>
+        <button class="icon-btn" id="closeBtn" type="button" aria-label="收起窗口" title="收起（Esc）">
+          <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2.4 2.4 L9.6 9.6 M9.6 2.4 L2.4 9.6"
+                  stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 手绘感的波形分隔线（JS 生成 path） -->
+    <div class="divider" aria-hidden="true">
+      <svg id="dividerWave" viewBox="0 0 640 10" preserveAspectRatio="none">
+        <path id="dividerPath" d="" fill="none" stroke="rgba(255,255,255,.09)"
+              stroke-width="1.1" stroke-linecap="round" />
+      </svg>
+    </div>
+
+    <!-- 中部：消息流 -->
+    <main class="thread" id="thread">
+      <div class="empty" id="empty">
+        <svg class="empty-wave" viewBox="0 0 48 12" fill="none" aria-hidden="true">
+          <path d="M1 6 q5 -4 10 0 t10 0 t10 0 t10 0"
+                stroke="#4f8cff" stroke-opacity=".5" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+        <div class="empty-title" id="emptyTitle">说声「语音助手」，或者直接打字</div>
+        <div class="empty-sub" id="emptySub">按 Ctrl+Alt+J 也能把窗口叫出来</div>
+      </div>
+      <div class="list" id="list"></div>
+    </main>
+
+    <!-- 底部：电平波形 + 输入框 -->
+    <footer class="footer">
+      <div class="meter" id="meter" aria-hidden="true">
+        <span class="meter-label"><span class="meter-dot"></span>正在聆听</span>
+        <canvas id="levelCanvas"></canvas>
+      </div>
+      <div class="composer" id="composer">
+        <textarea id="input" rows="1" spellcheck="false"
+                  placeholder="也可以直接打字，回车发送"></textarea>
+        <button class="send" id="sendBtn" type="button" disabled aria-label="发送" title="发送（Enter）">
+          <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 11.5 V3 M3.4 6.4 L7 2.6 L10.6 6.4"
+                  stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+    </footer>
+
+    <!-- 轻提示 -->
+    <div class="toast" id="toast" role="status">
+      <span class="toast-text" id="toastText"></span>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# 本机配置：从示例文件复制后自己填，不进仓库
+app/config.json
+cordis.patch.yml
+
+# 模型（唤醒词 33 MB + 识别模型数百 MB），换机器自己拷
+models/
+
+# 本机记忆与运行状态
+.mnemon/
+*.log
+app.pid
+
+# Python 运行时产物
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Electron 浮窗的依赖与临时产物（desktop/ 源码要进仓库，node_modules 不要）
+desktop/node_modules/
+desktop/dist/
+# 本机为解析 @deepseek-ai/schemastery 建的 junction，不进仓库
+node_modules/
+
+# 调试截图、录屏、窗口枚举记录（含本机画面）
+app/_shots/
+tools/*.png
+tools/*.bmp
+tools/_ws.txt
+
+# 私有业务 preset：只放本机，不进公开仓库（可公开的骨架见 presets/example-assistant/）
+presets/private-*/

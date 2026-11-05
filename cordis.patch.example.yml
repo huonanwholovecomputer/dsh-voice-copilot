@@ -1,0 +1,16 @@
+# 把本文件复制成 cordis.patch.yml，再按需改：
+#   dataDir     队列/事件/runtime 文件放哪（默认 ~/.dsh/voice-copilot）
+#   agentPreset 语音会话用哪个 DSH 预设；留空则用默认预设
+#   cwd         语音会话落在哪个工作区（目录不存在会由插件创建）
+#   name        助手称呼，也是默认唤醒词（默认「小印」）
+#   prompt      补充提示词 / 人设，作为开发者消息注入语音会话
+# 其余可改字段见 index.js 的 Config；装好后在「插件 → 已安装 → DSH 语音助手 → 配置」里也能改。
+- insert:
+    - id: voice-copilot
+      name: '@local/dsh-voice-copilot'
+      config:
+        dataDir: 'C:/Users/<你的用户名>/.dsh/voice-copilot'
+        agentPreset: ''
+        cwd: ''
+        name: '小印'
+        prompt: ''
