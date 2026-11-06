@@ -59,6 +59,17 @@ function resolveSherpa() {
 const config = loadConfig()
 const log = createLogger(config.logFile)
 
+/** 进程还在不在；EPERM 说明在、只是没权限碰它。 */
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return Boolean(error && error.code === 'EPERM')
+  }
+}
+
 const messages = []
 let messageSeq = 0
 let state = {
@@ -530,6 +541,17 @@ async function onReady() {
   }, 120)
 
   app.on('will-quit', () => clearInterval(timer))
+
+  // 宿主看门狗：DSH 正常退出时插件会直接把本进程结束掉；这里兜住宿主崩溃/被强杀的情况，
+  // 免得留下一个对着没人应的浮窗。runtime.json 里没有 hostPid（老版本宿主）时不启用。
+  const hostTimer = setInterval(() => {
+    const pid = Number(config.hostPid) || 0
+    if (!pid || isProcessAlive(pid)) return
+    log(`宿主进程 ${pid} 已不在，浮窗跟着退出`)
+    clearInterval(hostTimer)
+    app.quit()
+  }, 2000)
+  app.on('will-quit', () => clearInterval(hostTimer))
 
   // 启动时问一次会话要历史，浮窗晚开也不会空白
   bridge.syncHistory()

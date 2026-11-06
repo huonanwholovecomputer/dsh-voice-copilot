@@ -4,7 +4,8 @@
  * 现在的浮窗是 desktop/ 下的 Electron 程序（和 dsh-pet 一个路子：插件宿主 + 自带 helper 进程）。
  * 老的 Python 版（app/main.py）保留成回退路线：找不到 Electron 时还能用。
  *
- * 只负责「启动」，不负责「随 DSH 退出杀掉」：浮窗是常驻托盘程序，DSH 关了它还能待着。
+ * 浮窗跟着宿主走：宿主启动时拉起，插件卸载/DSH 退出时由 stopFloatingWindow 结束它；
+ * 宿主崩了则由浮窗自己看 hostPid 心跳退出（见 desktop/main.js 的宿主看门狗）。
  * 重复启动有三道闸：
  *   1. 这里先看 dataDir/app.pid，pid 还活着就不拉；
  *   2. 浮窗自己 requestSingleInstanceLock（Electron 官方单实例，比命名互斥量省事）；
@@ -12,7 +13,7 @@
  *
  * 关掉自启：插件 config 里写 autoStart: false。
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -89,6 +90,36 @@ export function findElectron(explicit) {
     if (exe && fs.existsSync(exe)) return exe
   }
   return ''
+}
+
+/**
+ * 关掉浮窗：DSH 退出/插件卸载时调用，让小印跟着宿主一起走。
+ * 用 taskkill /T /F 是刻意的——宿主进程马上就要没了，等不到浮窗慢慢退出；
+ * 先把进程打掉，下次宿主启动时 pid 文件里的进程已经不在，能干净地重新拉起。
+ * 返回 { stopped, reason, pid? }，永不抛异常。
+ */
+export function stopFloatingWindow(options = {}) {
+  const dataDir = options.dataDir || defaultDataDir()
+  const pidFile = path.join(dataDir, 'app.pid')
+  const pid = readPid(pidFile)
+  if (!isProcessAlive(pid)) {
+    try { fs.unlinkSync(pidFile) } catch { /* 不在了正好 */ }
+    return { stopped: false, reason: 'not-running' }
+  }
+  try {
+    if (process.platform === 'win32') {
+      const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      if (result && result.status !== 0) {
+        return { stopped: false, reason: 'taskkill-failed', pid, status: result.status }
+      }
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+  } catch (error) {
+    return { stopped: false, reason: 'kill-failed', pid, error: String(error && error.message ? error.message : error) }
+  }
+  try { fs.unlinkSync(pidFile) } catch { /* 子进程退出时也会清 */ }
+  return { stopped: true, pid }
 }
 
 /**
