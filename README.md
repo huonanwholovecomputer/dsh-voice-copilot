@@ -52,6 +52,7 @@
 | 额外唤醒词 | 逗号分隔；留空用自动派生。填了就以填的为准 |
 | 提示词 / 人设 | 作为一条开发者消息注入语音会话，`{{name}}` 会替换成称呼；回答风格、业务背景都写这里 |
 | 全局热键 | 如 `Ctrl+Alt+J`，改完立即重注册 |
+| 监听唤醒词 / 关唤醒词时释放麦克风 | 前者只关 KWS 解码；勾上后者才会连采音流一起放掉（任务栏麦克风图标灭），按热键时才临时开麦，代价是不再有 600 ms 预录 |
 | 语音会话预设 / 工作区目录 | 决定语音会话用哪个 agent preset、落在哪个工作区；改预设只影响之后新建的语音会话 |
 | 静音判定 / 最长录音 / 识别语言 | 端点与 SenseVoice 参数 |
 | 学习记录开关 / 目录 | 默认开，记到 `<dataDir>/learning`；本机指到仓库 `learning/`，见下节 |
@@ -143,14 +144,14 @@ voice_pinyin({ action: "match", heard: "李虎", candidates: ["李福生", "李�
 | preload | `preload.js` | 只开 `window.xiaoyin` 一组方法，`contextIsolation: true` / `nodeIntegration: false` |
 
 - 窗口 720×520、圆角、透明、无边框、置顶（`screen-saver` 级）。**隐藏不是 `win.hide()`**，是 `setOpacity(0)` + 鼠标穿透——真隐藏会让渲染进程被节流，Web Audio 掉帧。
-- 麦克风只开一路：渲染进程常开，主进程里既做唤醒词、又做命令录音，所以「听见小印」到「开始录」中间不丢音（唤醒时把最近 150 ms 一起带上，热键时带 600 ms）。
+- 麦克风默认只开一路、常驻：渲染进程一直采，主进程里既做唤醒词、又做命令录音，所以「听见小印」到「开始录」中间不丢音（唤醒时把最近 150 ms 一起带上，热键时带 600 ms）。勾上「关唤醒词时释放麦克风」后改成按需：关唤醒词就 `track.stop()`（任务栏图标灭），热键时临时开麦、录完再放。
 - 识别引擎不另装：直接 require DSH 安装目录 `resources/app.asar.unpacked/node_modules/sherpa-onnx-node`（原生模块按 N-API 编的，Electron 里能直接加载）。模型还是 `app/config.json` 里那个 `model`（SenseVoice int8，239 MB）。
 - 识别结果不回宿主转写：本机 desktop profile 的 `speechToText` 服务是空的（`speech={"available":false}`），所以 `desktop/` 把文字连同 wav 路径一起入队，`index.js` 看到有 `text` 就直接用，不碰转写服务。
 - 「回到会话」走 `lib/focus.js`（从 dsh-notify-me 抄的 PowerShell 抬升阶梯：还原 → Alt 轻敲 + SetForegroundWindow → AttachThreadInput → 最小化/还原兜底，每级回读 `GetForegroundWindow` 核对），同时把「切到语音浮窗会话」这件事交给插件：浮窗写一张 `{kind:'open'}` 条子，宿主挂到回环路由 `/__dsh-voice-copilot/open-session`，页面半侧 `client.js` 轮询取走后调 `uiWorkspace.openSession()` 真的切过去。
 
 ## 唤醒词怎么工作的
 
-一路麦克风常开（不开第二路，所以从「听见」到「开始录」不会丢开头），唤醒词走的是 sherpa-onnx 的流式关键词识别（3.3M zipformer，拼音建模，`models/` 下自带）：
+一路麦克风常开（不开第二路，所以从「听见」到「开始录」不会丢开头），唤醒词走的是 sherpa-onnx 的流式关键词识别（3.3M zipformer，拼音建模，`models/` 下自带）。勾了「关唤醒词时释放麦克风」就改为按需开麦，判定与开关的日志见 `<dataDir>/window.log` 里的 `麦克风策略 / 麦克风开（热键） / 麦克风关（…）`：
 
 1. 每 20 ms 把新采到的音频喂给关键词模型，说完「小印」当场命中（不等静音、不做整句识别）。
 2. 命中就弹窗，并**把刚才最近 150 ms 的音频一起带上**开录——所以「小印，今天有什么安排」这种连读也不会丢半句。
@@ -193,7 +194,7 @@ Python 回退版还支持 FireRedASR2 int8（`models/fire-red-asr2-int8/`、`fir
 - 常驻内存：Electron 五个进程加起来约 0.7–0.8 GB（主进程里压着 SenseVoice 239 MB + KWS），比 PySide6 那版（约 0.5–0.6 GB）**并不更省**；换掉它图的是界面质量、没有 Python 依赖、改 UI 不用重启，不是内存。
 - 唤醒是流式关键词识别，说完「小印」约 0.3 秒弹窗；连读靠前摇补回来，但要求接着说完后半句。
 - 唤醒词按拼音匹配，同音字不区分；环境里有人说「小×」可能误触发，托盘里可临时关掉。
-- 常驻监听会一直占用麦克风；DSH 网页里的那个麦克风按钮同一时间只能有一个在采。
+- 常驻监听会一直占用麦克风（默认行为）；要么在插件页勾上「关唤醒词时释放麦克风」，要么直接退出浮窗。DSH 网页里的那个麦克风按钮同一时间只能有一个在采。
 - 录音的端点靠能量阈值（RMS 0.012，`autoGainControl` 关掉了——开着会把底噪放大到 0.99，整段被误判成「有人在说」），比真正的 VAD 粗；环境特别吵时可能把噪声当一句话送去识别。
 - 麦克风权限：主进程对 `media` / `audioCapture` 一律放行，没有系统级的二次确认。
 - 插件改代码后要**完全重启桌面端**才会重新加载 JS（本机是 `link:` 安装，profile 的 `node_modules/@local/dsh-voice-copilot` 直指本仓库，重启即读到新代码）；万一重启后行为没变，再 `remove_bundle` + `install_bundle` 一次。

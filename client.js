@@ -43,6 +43,7 @@ window.__ModuleLoader__.load({
         silenceSeconds: asText(v.silenceSeconds == null ? '1.2' : v.silenceSeconds),
         maxSeconds: asText(v.maxSeconds == null ? '20' : v.maxSeconds),
         wake: v.wake !== false,
+        releaseMicWhenWakeOff: v.releaseMicWhenWakeOff === true,
       }
     }
 
@@ -127,6 +128,9 @@ window.__ModuleLoader__.load({
           if (draft[key] !== initial[key]) ops.push({ op: 'set', path: [key], value: draft[key] })
         }
         if (draft.wake !== initial.wake) ops.push({ op: 'set', path: ['wake'], value: draft.wake })
+        if (draft.releaseMicWhenWakeOff !== initial.releaseMicWhenWakeOff) {
+          ops.push({ op: 'set', path: ['releaseMicWhenWakeOff'], value: draft.releaseMicWhenWakeOff })
+        }
         if (silence !== Number(initial.silenceSeconds)) ops.push({ op: 'set', path: ['silenceSeconds'], value: silence })
         if (max !== Number(initial.maxSeconds)) ops.push({ op: 'set', path: ['maxSeconds'], value: max })
         if (ops.length === 0) { setMessage('没有改动'); return }
@@ -216,12 +220,23 @@ window.__ModuleLoader__.load({
             onChange: (event) => setField('maxSeconds', event.target.value),
           })),
         ),
-        h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' } },
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' } },
           h('input', {
             type: 'checkbox', checked: draft.wake,
             onChange: (event) => setField('wake', event.target.checked),
           }),
           h('span', null, '监听唤醒词'),
+        ),
+        h('label', { style: { display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '16px' } },
+          h('input', {
+            type: 'checkbox', checked: draft.releaseMicWhenWakeOff,
+            onChange: (event) => setField('releaseMicWhenWakeOff', event.target.checked),
+          }),
+          h('span', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+            h('span', null, '关唤醒词时释放麦克风'),
+            h('span', { style: { opacity: 0.65, fontSize: '0.85em', lineHeight: 1.5 } },
+              '关掉唤醒词就放开麦克风（任务栏的麦克风图标会灭）；按热键时才临时开麦，开头一两个字可能缺一点。'),
+          ),
         ),
         h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
           h('button', { type: 'button', disabled: busy, onClick: () => { void save() } }, busy ? '保存中…' : '保存'),
