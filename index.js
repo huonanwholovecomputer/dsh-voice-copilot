@@ -25,7 +25,9 @@ import path from 'node:path'
 
 import z from '@deepseek-ai/schemastery'
 
-import { startFloatingWindow } from './autostart.js'
+import { startFloatingWindow, stopFloatingWindow } from './autostart.js'
+import { createLearning } from './learning.js'
+import { createPinyinTool } from './pinyin-match.js'
 
 // 只把会话控制器当硬依赖；语音服务按需取，拿不到就退回「文字先通」，
 // 免得语音行没挂上时整个插件卡在 pending。
@@ -55,6 +57,12 @@ export const Config = z.object({
   silenceSeconds: z.number().min(0.3).max(10).default(1.2).description('说完后静音多久自动结束').volatile(),
   maxSeconds: z.number().min(3).max(120).default(20).description('一次录音最长秒数').volatile(),
   language: z.string().default('zh').description('SenseVoice 识别语言').volatile(),
+  learning: z.boolean().default(true).description('记录每轮思考、工具调用与回复，供离线复盘').volatile(),
+  learningDir: z.string().default('').description('学习记录目录，默认 <dataDir>/learning；可指向本仓库 learning/').volatile(),
+  learningMaxChars: z.number().min(200).max(50000).default(4000).description('单段思考最多保留的字符数').volatile(),
+  learningToolArgsChars: z.number().min(100).max(20000).default(2000).description('单条工具参数最多保留的字符数').volatile(),
+  learningToolResultChars: z.number().min(100).max(20000).default(1500).description('单条工具结果最多保留的字符数').volatile(),
+  learningRedact: z.boolean().default(true).description('落盘前打码手机号、身份证号与 wxid').volatile(),
 })
 
 const POLL_MS = 120
@@ -144,9 +152,34 @@ export function apply(ctx, config = {}) {
   const currentCwd = () => liveText('cwd', '') || DEFAULT_CWD
   const currentPreset = () => liveText('agentPreset', '')
 
+  // 学习记录：默认开，落 dataDir/learning；本机把它指到仓库 learning/，这样在这个工作目录里
+  // 直接读原始记录就能复盘。isHuman/isNoise 延迟引用（它们定义在后面），只在真正收到事件时才调用。
+  const learningEnabled = () => liveBool('learning', true)
+  const learningDir = () => {
+    const custom = liveText('learningDir', '')
+    return custom ? path.resolve(custom) : path.join(dataDir, 'learning')
+  }
+  const learning = createLearning({
+    dir: learningDir(),
+    log,
+    limits: () => ({
+      thinking: liveNumber('learningMaxChars', 4000),
+      args: liveNumber('learningToolArgsChars', 2000),
+      result: liveNumber('learningToolResultChars', 1500),
+    }),
+    redact: () => liveBool('learningRedact', true),
+    isHuman: (event) => { try { return isHuman(event) } catch { return false } },
+    isNoise: (text) => { try { return isNoise(text) } catch { return false } },
+    cwd: currentCwd,
+    preset: currentPreset,
+  })
+
   // 浮窗进程看不到 Cordis 配置，靠这个快照同步「称呼 / 唤醒词 / 热键 / 端点参数」。
   // 放在 dataDir 而不是 profile，是因为浮窗只需要读一个文件，也方便用户手改排查。
   const runtimeSnapshot = () => ({
+    // 宿主进程号：浮窗拿它判断「DSH 还在不在」，宿主一没就自己退出。
+    // 每次 DSH 重启 pid 都会变，所以跟着 runtime.json 一起刷新。
+    hostPid: process.pid,
     name: currentName(),
     wakeWords: liveText('wakeWords', '')
       .split(/[,，;；\n]+/)
@@ -253,43 +286,124 @@ export function apply(ctx, config = {}) {
     const lines = [
       '【语音助手设定】',
       `你的称呼是「${name}」。用户通过语音浮窗和你对话，回答尽量简短、口语化，适合直接朗读。`,
+      '',
+      '【怎么说话】',
+      '- 默认一两句、最多三行，先说结论。不列点、不加粗、不写标题，也不要念出 Markdown 符号。',
+      '- 只给用户问的那件事：谁、什么时候、什么东西、现在什么状态、在哪（标签页/单号）、钱。不解释你是怎么查到的，不报工具名，不复述用户的话。',
+      '- 一次最多问一个问题、最多给两个选项。候选接近时问「是不是某某」，不要整份名单摆出来让他挑。',
+      '- 例（用户问「刚刚张玮发的什么」，只回这一句）：张伟在半小时前给你发了「计算机程序设计第二次作业.doc」，已经打好了，本地打印工具在 3 号标签页，订单号 L0056，钱已经收了。不要拆成三段，也不要再问「你要我看哪一个」。',
     ]
     if (extra) lines.push('', extra)
+    if (learningEnabled()) {
+      lines.push(
+        '',
+        '【复盘记录】这轮对话的思考、工具调用与回复会以脱敏形式记到本机 learning/ 目录，供之后离线分析。',
+        '遇到同一工具反复失败、用户纠正你、或流程明显卡住时，用 voice_note 记一条（kind、title、detail），记完继续做事，别停下来解释。',
+      )
+    }
+    lines.push(
+      '',
+      '【听错的名字】语音转写经常出现同音错字，人名尤其容易（例如「张伟」被写成「张玮」）。',
+      '按字面查不到人时别急着说没有：先取一份候选名单（联系人、群成员、最近聊天里的人），连同听到的名字交给 voice_pinyin（action=match）按拼音做模糊比对；也可以直接传首字母缩写（如 ZW）。',
+      '匹配分接近或候选不止一个时，挑最像的一个（最多两个）去问用户「是不是他」，不要把整份名单摆出来让他挑；确认过的名字再用工具去查。',
+      '',
+      '【换话题】用户说「开个新话题」「重开一段」「换个话题」时，调用 voice_new_session（可带一个简短的 title），然后只回一句「好，下一句进新的一段」。别自己猜会话 id，也别长篇解释旧会话怎么了。',
+    )
     return lines.join('\n')
   }
 
-  const ensurePersona = async (sessionId) => {
-    const text = personaText().trim()
-    if (!text) return sessionId
-    const hash = crypto.createHash('sha1').update(text).digest('hex')
-    const state = readState()
-    if (state.persona && state.persona.sessionId === sessionId && state.persona.hash === hash) return sessionId
+  // 人设不进会话日志（developer/message 要求挂在已打开的 turn/step 上，会话级写入会被格式校验拒绝），
+  // 而是注册成该 Agent 自己的系统提示段：作用域限定在这个会话，不污染日志、也不影响别的会话。
+  const PERSONA_SECTION = 'voice-copilot:persona'
+  const personaApplied = new WeakSet()
+  // 当前语音会话的 id：session/event 里用它筛事件（学习关掉时也能判断小印在不在跑）。
+  let voiceSessionId = ''
+  // 「开个新话题」的下一句才真正切会话：这一轮留在旧会话里收尾。
+  let pendingFresh = null
+
+  const applyPersona = (agent) => {
     try {
-      const sessions = ctx.get('sessions')
-      const session = sessions && typeof sessions.get === 'function' ? sessions.get(sessionId) : null
-      if (!session || typeof session.append !== 'function') {
-        log('sessions 服务不可用，跳过人设注入')
-        return sessionId
+      if (!agent || personaApplied.has(agent)) return
+      const sessionId = agent.session && agent.session.id ? agent.session.id : agent.id
+      const state = readState()
+      if (!sessionId || !state.sessionId || sessionId !== state.sessionId) return
+      personaApplied.add(agent)
+      voiceSessionId = sessionId
+      if (learningEnabled()) learning.track(sessionId)
+      const text = personaText().trim()
+      if (!text) return
+      const prompt = agent.ctx && agent.ctx.systemPrompt
+      if (!prompt || typeof prompt.section !== 'function') {
+        log('systemPrompt 服务不可用，跳过人设注册')
+        return
       }
-      session.append('developer/message', {
-        message: {
-          id: crypto.randomUUID(),
-          role: 'developer',
-          content: [{ type: 'text', text }],
-          source: { kind: 'dsh-voice-copilot', form: 'persona' },
-        },
-      }, { surfaceOp: 'append' })
-      writeState({ ...state, persona: { sessionId, hash } })
-      log(`persona 已注入 session=${sessionId} hash=${hash.slice(0, 8)}`)
+      prompt.section({ name: PERSONA_SECTION, order: 1, text })
+      log(`persona 已注册为系统提示段 session=${sessionId}`)
     } catch (error) {
-      log(`persona 注入失败：${error && error.stack ? error.stack : error}`)
+      log(`persona 注册失败：${error && error.stack ? error.stack : error}`)
     }
+  }
+
+  const ensurePersona = async (sessionId) => {
+    voiceSessionId = sessionId || voiceSessionId
+    if (learningEnabled()) learning.track(sessionId)
     return sessionId
   }
 
-  const resolveSessionId = async () => {
+  /**
+   * 开一段新的：当前会话改成带时间的标题（侧边栏还能翻回去），新建一个接上。
+   * archiveOld=false 用于「旧会话已经取不到」的情形，不去改一个不存在的会话。
+   */
+  const startNewSession = async (options = {}) => {
+    const archiveOld = options.archiveOld !== false
+    const wantedTitle = String(options.title || '').trim()
     const cwd = currentCwd()
     const preset = currentPreset()
+    const state = readState()
+    let workspaceId = ''
+    try {
+      workspaceId = await ensureWorkspace(cwd)
+    } catch (error) {
+      log(`ensureWorkspace failed: ${error}`)
+    }
+    if (archiveOld && state.sessionId) {
+      const stamp = new Date().toLocaleString('zh-CN', {
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+      })
+      const archived = wantedTitle || `语音浮窗 · 截至 ${stamp}`
+      try {
+        await ctx.sessionController.rename({ sessionId: state.sessionId, title: archived })
+      } catch (error) {
+        log(`rename previous session failed: ${error}`)
+      }
+    }
+    const where = workspaceId ? { workspaceId } : { cwd }
+    let created
+    try {
+      created = await ctx.sessionController.create(preset ? { ...where, agentPreset: preset } : where)
+    } catch (error) {
+      log(`create with preset ${preset} failed: ${error}`)
+      created = await ctx.sessionController.create(where)
+    }
+    const sessionId = created.sessionId
+    writeState({ sessionId, title: SESSION_TITLE, cwd, workspaceId, createdAt: Date.now() })
+    try {
+      await ctx.sessionController.rename({ sessionId, title: SESSION_TITLE })
+    } catch (error) {
+      log(`rename failed: ${error}`)
+    }
+    log(`created session ${sessionId} in ${cwd}${archiveOld ? '（换了新的一段）' : ''}`)
+    return await ensurePersona(sessionId)
+  }
+
+  const resolveSessionId = async () => {
+    // 用户刚说过「开个新话题」：这一轮还在旧会话里收尾，下一句才切过去。
+    if (pendingFresh) {
+      const options = pendingFresh
+      pendingFresh = null
+      return await startNewSession(options)
+    }
+    const cwd = currentCwd()
     const state = readState()
     let workspaceId = ''
     try {
@@ -312,26 +426,8 @@ export function apply(ctx, config = {}) {
         log(`resolveAgent failed: ${error}`)
       }
     }
-    // create 只认一个：给了 workspaceId 就不能再给 cwd（工作区自带路径）
-    const where = workspaceId ? { workspaceId } : { cwd }
-    let created
-    try {
-      created = await ctx.sessionController.create(
-        preset ? { ...where, agentPreset: preset } : where,
-      )
-    } catch (error) {
-      log(`create with preset ${preset} failed: ${error}`)
-      created = await ctx.sessionController.create(where)
-    }
-    const sessionId = created.sessionId
-    writeState({ sessionId, title: SESSION_TITLE, cwd, workspaceId, createdAt: Date.now() })
-    log(`created session ${sessionId} in ${cwd}`)
-    try {
-      await ctx.sessionController.rename({ sessionId, title: SESSION_TITLE })
-    } catch (error) {
-      log(`rename failed: ${error}`)
-    }
-    return await ensurePersona(sessionId)
+    // 旧会话取不到了（删了/归档了），直接开新的；这里不去改一个不存在的会话。
+    return await startNewSession({ archiveOld: false })
   }
 
   const textOf = (content) => {
@@ -575,6 +671,98 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     clearInterval(timer)
     if (followAbort) followAbort.abort()
+    try { learning.flush('plugin-dispose') } catch (error) { log(`learning flush failed: ${error}`) }
+    // 小印跟着 DSH 走：宿主退出/插件卸载时把浮窗一起结束掉。
+    // 不额外写 host-closed 事件：那类事件会被下一个宿主拉起的浮窗读到，反而把自己立刻关掉；
+    // taskkill 是同步的，杀不掉还有浮窗自己的 hostPid 看门狗兜底。
+    try {
+      const stopped = stopFloatingWindow({ dataDir })
+      if (stopped.stopped) log(`floating window stopped pid=${stopped.pid}`)
+      else if (stopped.reason !== 'not-running') log(`floating window stop failed: ${JSON.stringify(stopped)}`)
+    } catch (error) {
+      log(`floating window stop failed: ${error && error.stack ? error.stack : error}`)
+    }
+  })
+
+  // Agent 创建（含重启后激活已有会话）时把这一段人设挂到它自己的系统提示里；
+  // 只在是我们那个语音会话时才挂，别的会话不受影响。
+  ctx.on('agent/created', (payload) => {
+    applyPersona(payload && payload.agent)
+  }, { global: true })
+
+  // 学习记录订阅：session 事件从会话自己的上下文发出来，普通 ctx.on 收不到别的会话，
+  // 必须带 global；这里只处理 resolveSessionId 登记过的那个会话，别的会话 observe 会直接返回。
+  // 语音会话当前跑到第几轮：0 = 没在跑。工具可见性用它判断，独立于学习开关。
+  let voiceTurn = 0
+  ctx.on('session/event', (session, event) => {
+    if (session && voiceSessionId && session.id === voiceSessionId) {
+      if (event.type === 'turn/start') voiceTurn = Number(event.data && event.data.turn) || 1
+      else if (event.type === 'turn/end') voiceTurn = 0
+    }
+    if (!learningEnabled()) return
+    try {
+      learning.observe(session, event)
+    } catch (error) {
+      log(`learning observe failed: ${error && error.stack ? error.stack : error}`)
+    }
+  }, { global: true })
+
+  // 让小印自己记问题：普通对象定义即可，宿主只校验 output.schema。
+  // when 每步求值：只有小印正在跑某一轮（activeTurn 非空）时这些工具才进模型视野，别的会话看不到。
+  /**
+   * 「开一段新的」工具：只登记意图，真正切会话发生在下一句（resolveSessionId）。
+   * 这样当前这一轮仍在旧会话里正常收尾，不会被半路换 Agent。
+   */
+  const newSessionTool = () => ({
+    name: 'voice_new_session',
+    description:
+      '开一段新的对话：当前这段会在下一句之前收尾（旧会话改名后仍留在侧边栏，可翻回去），接下来的话进新会话。用户说「开个新话题」「重开一段」「换个话题」时调用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '可选：给刚结束的这一段起个名字（不给就按时间命名）' },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          queued: { type: 'boolean' },
+          error: { type: 'string' },
+        },
+        required: ['ok'],
+      },
+      render: (args, value) => [{
+        type: 'text',
+        text: value.ok ? '好，下一句进新的一段。' : `没换成：${value.error || '未知原因'}`,
+      }],
+    },
+    async execute(args) {
+      try {
+        const title = args && typeof args.title === 'string' ? args.title.trim() : ''
+        pendingFresh = { archiveOld: true, title }
+        log(`pending new session (title=${title || '(按时间)'})`)
+        return { ok: true, queued: true }
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) }
+      }
+    },
+  })
+
+  ctx.inject(['tools'], (toolCtx) => {
+    toolCtx.effect(() => toolCtx.tools.register(learning.noteTool(), {
+      when: () => learningEnabled() && Boolean(learning.activeTurn()),
+    }), 'dsh-voice-copilot: voice_note')
+    // 语音转写容易把名字听成同音字，给它一个按拼音比对候选的工具。
+    // 独立于学习开关：只要小印这轮在跑就可见（voiceTurn 由 session/event 维护）。
+    toolCtx.effect(() => toolCtx.tools.register(createPinyinTool(), {
+      when: () => voiceTurn > 0,
+    }), 'dsh-voice-copilot: voice_pinyin')
+    // 开一段新的：同样是「小印这轮在跑」时才可见。
+    toolCtx.effect(() => toolCtx.tools.register(newSessionTool(), {
+      when: () => voiceTurn > 0,
+    }), 'dsh-voice-copilot: voice_new_session')
   })
 
   // 先把会话挂进一个侧栏看得见的工作区，再跟它的流：这样浮窗一开就能看到这段对话（包括你在 DSH 界面里说的）
