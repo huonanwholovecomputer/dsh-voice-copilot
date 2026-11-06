@@ -54,6 +54,11 @@ export const Config = z.object({
   cwd: z.string().default('').description('语音会话所在工作区目录，默认用户主目录').volatile(),
   hotkey: z.string().default('ctrl+alt+j').description('叫出浮窗的全局热键').volatile(),
   wake: z.boolean().default(true).description('是否监听唤醒词').volatile(),
+  releaseMicWhenWakeOff: z
+    .boolean()
+    .default(false)
+    .description('关掉唤醒词时连麦克风一起释放（任务栏麦克风图标会灭）；按热键时才临时开麦，开头一两个字可能缺一点')
+    .volatile(),
   silenceSeconds: z.number().min(0.3).max(10).default(1.2).description('说完后静音多久自动结束').volatile(),
   maxSeconds: z.number().min(3).max(120).default(20).description('一次录音最长秒数').volatile(),
   language: z.string().default('zh').description('SenseVoice 识别语言').volatile(),
@@ -187,6 +192,8 @@ export function apply(ctx, config = {}) {
       .filter(Boolean),
     hotkey: liveText('hotkey', '') || 'ctrl+alt+j',
     wake: liveBool('wake', true),
+    // 浮窗据此决定「关掉唤醒词后要不要放开麦克风」；默认 false = 保持常驻采音
+    releaseMicWhenWakeOff: liveBool('releaseMicWhenWakeOff', false),
     silenceSeconds: liveNumber('silenceSeconds', 1.2),
     maxSeconds: liveNumber('maxSeconds', 20),
     language: liveText('language', '') || 'zh',

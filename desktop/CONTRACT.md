@@ -15,6 +15,7 @@
   phase: 'sleeping' | 'recording' | 'thinking' | 'replying' | 'error'
   level: number          // 0..1，当前麦克风电平（RMS 归一化后，已做平滑）
   wake: boolean          // 唤醒词监听是否开启
+  mic: boolean           // 主进程是否允许采音；false 时渲染层必须停掉 track（任务栏麦克风图标随之熄灭）
   hint: string           // 一行小字，例如「说「小印」就能叫出来，或按 Ctrl+Alt+J」
   name: string           // 当前称呼（插件页可改），用于品牌字
   hotkey: string         // 当前热键的显示形式，例如 Ctrl+Alt+J
@@ -59,6 +60,7 @@ Array<{
 | `xiaoyin.audio.start()` | 申请麦克风并开始推流，`Promise<{ ok: boolean, sampleRate: number, device: string, error?: string }>`。 |
 | `xiaoyin.audio.stop()` | 停止推流并释放麦克风。 |
 | `xiaoyin.audio.push(samples, sampleRate)` | 推一段 **Float32** 单声道 PCM（值域 -1..1）。 |
+| `xiaoyin.audio.state()` | 问主进程现在该不该开麦，`Promise<{ mic: boolean }>`；启动时先调用它，返回值也是 `onState` 里 `mic` 的初值。 |
 
 ## 3. 采音要求（渲染层实现）
 
@@ -66,7 +68,8 @@ Array<{
 - `new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' })`；用 `AudioWorkletNode` 挂 `ui/pcm-worklet.js`，每个 process 块把 128 帧 `Float32Array` postMessage 出来。
 - 若实际 `audioContext.sampleRate !== 16000`，用 `xiaoyin.audio.push(samples, ctx.sampleRate)` 把真实采样率一并带上，主进程负责重采样（不要在渲染层重采样）。
 - 推流要持续（窗口隐藏时也在推），`level` 由主进程算，渲染层不要自己算。
-- 页面加载完成后**自动**调用一次 `xiaoyin.audio.start()`；失败就在状态行显示「麦克风不可用：<error>」，并允许用户点一下重试。
+- 页面加载完成后先 `await xiaoyin.audio.state()`：`mic === true` 才**自动**调一次 `xiaoyin.audio.start()`；`mic === false` 时连 `getUserMedia` 都不发（否则任务栏的麦克风图标会一直亮着）。失败就在状态行显示「麦克风不可用：<error>」，并允许用户点一下重试。
+- `onState` 的 `mic` 变 false 时要主动 `track.stop()` + 关 `AudioContext` 并调 `xiaoyin.audio.stop()`；变 true 时重新 `start()`。
 
 ## 4. 关键交互
 

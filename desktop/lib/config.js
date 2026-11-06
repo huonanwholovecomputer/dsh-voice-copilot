@@ -61,7 +61,7 @@ function splitWakeWords(value) {
  * @returns {{
  *   repoDir: string, desktopDir: string, dataDir: string, runtimeFile: string, logFile: string,
  *   queueDir: string, eventsDir: string, audioDir: string, stateFile: string,
- *   name: string, hotkey: string, wake: boolean, wakeWords: Array<{text: string, pinyin: string}>,
+ *   name: string, hotkey: string, wake: boolean, releaseMicWhenWakeOff: boolean, wakeWords: Array<{text: string, pinyin: string}>,
  *   maxSeconds: number, silenceSeconds: number, language: string, threads: number,
  *   asr: {model: string, tokens: string}, kws: {encoder: string, decoder: string, joiner: string, tokens: string, keywordsFile: string}
  * }}
@@ -103,6 +103,9 @@ function loadConfig() {
     language: text(runtime.language, text(raw.language, 'zh')),
     threads: positive(raw.stt_threads, 4),
     wake: typeof runtime.wake === 'boolean' ? runtime.wake : raw.wake !== false,
+    // 关掉唤醒词时要不要连麦克风一起释放（任务栏的麦克风图标会灭）；
+    // 默认否：常驻采音是为了热键能预录 600 ms。氛围设置见 runtime.json。
+    releaseMicWhenWakeOff: runtime.releaseMicWhenWakeOff === true,
     wakeWords,
     asr: { model, tokens },
     kws: {

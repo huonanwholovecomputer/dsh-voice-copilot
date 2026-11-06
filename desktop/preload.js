@@ -25,5 +25,7 @@ contextBridge.exposeInMainWorld('xiaoyin', {
     start: () => ipcRenderer.invoke('xiaoyin:audio-start'),
     stop: () => ipcRenderer.invoke('xiaoyin:audio-stop'),
     push: (samples, sampleRate) => ipcRenderer.send('xiaoyin:audio', samples, sampleRate),
+    // 启动时先问一句「现在该不该开麦」：策略要求释放麦克风时，连 getUserMedia 都不发
+    state: () => ipcRenderer.invoke('xiaoyin:mic-state'),
   },
 })

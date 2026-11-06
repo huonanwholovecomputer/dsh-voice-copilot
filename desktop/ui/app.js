@@ -66,6 +66,9 @@
   let micError = ''
   let audioStarting = false
   let audioGraph = null
+  // 主进程说了算：它按「关掉唤醒词是否释放麦克风」的策略推 mic true/false。
+  // false 时这里连 getUserMedia 都不发，任务栏的麦克风图标才会真的灭。
+  let micAllowed = null
 
   /* ---------------- 3. 状态渲染 ---------------- */
 
@@ -325,6 +328,7 @@
     if (VALID_PHASES.indexOf(payload.phase) >= 0) state.phase = payload.phase
     state.level = clamp01(payload.level)
     if (typeof payload.wake === 'boolean') state.wake = payload.wake
+    if (typeof payload.mic === 'boolean') setMicAllowed(payload.mic)
     if (typeof payload.name === 'string' && payload.name.trim()) state.name = payload.name.trim()
     if (typeof payload.hotkey === 'string' && payload.hotkey.trim()) state.hotkey = payload.hotkey.trim()
     if (typeof payload.hint === 'string') state.hint = payload.hint
@@ -446,6 +450,22 @@
     return err.message || String(err)
   }
 
+  /**
+   * 主进程放行 / 收回麦克风。
+   * 收回时一定要真把 track 停掉，否则任务栏的麦克风图标还会亮着（这正是用户报的现象）。
+   */
+  function setMicAllowed(on) {
+    if (micAllowed === on) return
+    micAllowed = on
+    if (!on) {
+      teardownAudio()
+      micError = ''
+      renderState()
+      return
+    }
+    if (!audioGraph && !audioStarting) startAudio()
+  }
+
   function teardownAudio() {
     const g = audioGraph
     audioGraph = null
@@ -487,6 +507,7 @@
   }
 
   async function startAudio() {
+    if (micAllowed === false) return
     if (audioGraph || audioStarting) return
     audioStarting = true
     micError = ''
@@ -517,6 +538,20 @@
           autoGainControl: false,
         },
       })
+      // 等权限弹窗的这几百毫秒里主进程可能已经改主意（比如用户刚把唤醒词关了）
+      if (micAllowed === false) {
+        try {
+          g.stream.getTracks().forEach((t) => t.stop())
+        } catch (e) {
+          /* 已释放 */
+        }
+        try {
+          Promise.resolve(api.audio.stop()).catch(() => {})
+        } catch (e) {
+          /* 忽略 */
+        }
+        return
+      }
       audioGraph = g
 
       try {
@@ -608,7 +643,7 @@
 
   micRetry.addEventListener('click', (e) => {
     e.stopPropagation()
-    if (audioStarting) return
+    if (audioStarting || micAllowed === false) return
     micError = ''
     teardownAudio()
     renderState()
@@ -639,7 +674,7 @@
     path.setAttribute('d', d)
   }
 
-  function boot() {
+  async function boot() {
     buildDivider()
     bindSubscriptions()
     autoGrow()
@@ -655,6 +690,17 @@
     }
     window.addEventListener('pointerdown', resumeOnGesture, { passive: true })
     window.addEventListener('keydown', resumeOnGesture)
+
+    // 先问一次主进程的麦克风策略：要求释放时，连 getUserMedia 都不发，
+    // 任务栏的麦克风图标才不会一直亮着。读不到就按「允许」处理，保持旧行为。
+    try {
+      const s = await api.audio.state()
+      if (s && typeof s.mic === 'boolean') micAllowed = s.mic
+    } catch (err) {
+      console.warn('[xiaoyin] 读取麦克风状态失败，按允许处理', err)
+    }
+    if (micAllowed === null) micAllowed = true
+    if (micAllowed === false) return
 
     // 合同要求：页面加载完成后自动申请一次麦克风
     if (document.readyState === 'complete') {

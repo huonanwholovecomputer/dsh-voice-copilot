@@ -76,6 +76,9 @@ let state = {
   phase: 'sleeping',
   level: 0,
   wake: config.wake,
+  // 麦克风是不是开着。默认「唤醒词关着也继续采音」：热键叫出来时要靠 600 ms 预录。
+  // 用户在设置里打开「唤醒词关闭时释放麦克风」后，这里就跟着 wake 走。
+  mic: config.wake || !config.releaseMicWhenWakeOff,
   name: config.name,
   hotkey: String(config.hotkey || 'ctrl+alt+j').toUpperCase(),
   hint: '',
@@ -87,6 +90,8 @@ let windowRef = null
 let tray = null
 let bridge = null
 let loop = null
+// requestMic 的超时兜底；见下面「麦克风策略」
+let micWatchdog = null
 let activeAccelerator = ''
 let activeHotkeyRaw = ''
 let replyStreaming = false
@@ -125,7 +130,58 @@ function setPhase(phase, extra) {
 function hintText() {
   const name = String(config.name || '语音助手')
   const hotkey = String(config.hotkey || 'ctrl+alt+j').toUpperCase().replace(/\+/g, '+')
-  return state.wake ? `说「${name}」就能叫出来，或按 ${hotkey}` : `按 ${hotkey} 叫出来（唤醒词已关）`
+  if (!state.wake) {
+    return config.releaseMicWhenWakeOff
+      ? `按 ${hotkey} 叫出来（唤醒词已关，麦克风按需开）`
+      : `按 ${hotkey} 叫出来（唤醒词已关）`
+  }
+  return `说「${name}」就能叫出来，或按 ${hotkey}`
+}
+
+// ---------------------------------------------------------------- 麦克风策略
+
+/**
+ * 麦克风该不该开着。
+ * 默认「关唤醒词也继续采音」，因为热键要预录 600 ms，现开麦会丢开头。
+ * 只有用户显式打开 releaseMicWhenWakeOff，才把「关唤醒词」等同于「释放麦克风」。
+ */
+function desiredMicOn() {
+  if (!config.releaseMicWhenWakeOff) return true
+  return Boolean(state.wake)
+}
+
+/** 按策略开/关采音。真正开麦的是渲染进程，这里只改状态并推给它。 */
+function applyMicPolicy(reason) {
+  const want = desiredMicOn()
+  if (want === state.mic) return want
+  state.mic = want
+  if (!want) {
+    if (loop && loop.state === 'recording') loop.cancel()
+    // 关麦期间环形缓存不会再进新样本，不清掉的话下次热键会把几分钟前的声音当预录
+    if (loop) loop.clearRing()
+    state.level = 0
+  }
+  pushState({ mic: want })
+  log(`麦克风${want ? '开' : '关'}（${reason}）`)
+  return want
+}
+
+/** 策略要求关麦时，热键这一下临时开麦；这一句录完再按策略关回去。 */
+function requestMic(reason) {
+  if (state.mic) return
+  state.mic = true
+  pushState({ mic: true })
+  log(`麦克风开（${reason}）`)
+  // 等采音流搬上来最多 4 秒：设备被别的程序占着、权限被拒时 getOpen 不会回来，
+  // 不兜底的话录音会一直挂在 recording（框架里没有帧就不会自己超时）。
+  clearTimeout(micWatchdog)
+  micWatchdog = setTimeout(() => {
+    if (!state.mic || !loop || loop.state !== 'recording') return
+    if (loop.capture && loop.capture.samples > 0) return
+    log('等麦克风超时，放弃这一句')
+    loop.cancel()
+    applyMicPolicy('麦克风没打开')
+  }, 4000)
 }
 
 /**
@@ -171,6 +227,8 @@ function applyRuntimeConfig() {
     state.wake = enabled
     if (tray) tray.setWake(enabled)
   }
+
+  applyMicPolicy('配置更新')
 
   state.hint = hintText()
   pushState({ name: state.name, hotkey: state.hotkey, wake: state.wake, hint: state.hint })
@@ -319,6 +377,8 @@ function wireVoiceLoop(voiceLoop) {
     } else if (phase === 'tick') {
       pushState({ phase: 'recording', recordingMs: ms, level: level || 0 })
     } else if (phase === 'end') {
+      // 按需开麦时，一句话收完（样本已经攒好）就把麦克风还回去
+      setTimeout(() => applyMicPolicy('录音结束'), 0)
       if (aborted) {
         // 用户主动取消：窗口留着不动，什么都不发
         if (state.phase === 'recording') {
@@ -353,6 +413,7 @@ function wireVoiceLoop(voiceLoop) {
     if (stage === 'kws') {
       state.wake = false
       tray.setWake(false)
+      applyMicPolicy('唤醒词不可用')
       pushState({ wake: false, hint: hintText() })
     }
   })
@@ -443,6 +504,7 @@ async function onReady() {
     log('找不到 sherpa-onnx-node，唤醒/识别不可用（只保留打字与队列）')
     state.wake = false
     windowRef.send('xiaoyin:toast', { text: '找不到本地语音引擎，唤醒词不可用', kind: 'warn' })
+    applyMicPolicy('没有语音引擎')
   } else {
     log(`语音引擎：${sherpaPath}`)
     // eslint-disable-next-line import/no-dynamic-require
@@ -451,7 +513,11 @@ async function onReady() {
     wireVoiceLoop(loop)
     loop.initEngines()
     state.wake = loop.wakeEnabled
+    applyMicPolicy('启动')
   }
+
+  // 开机这一行要能看出「麦克风为什么开着/关着」，排查任务栏图标时只看日志就够
+  log(`麦克风策略：唤醒词=${state.wake} 麦克风=${state.mic}（关唤醒词释放麦克风=${config.releaseMicWhenWakeOff}）`)
 
   tray = new TrayController({
     log,
@@ -463,6 +529,7 @@ async function onReady() {
       const next = loop.setWake(enabled)
       state.wake = next
       tray.setWake(next)
+      applyMicPolicy(next ? '托盘开唤醒' : '托盘关唤醒')
       pushState({ wake: next, hint: hintText() })
     },
     onQuit: () => app.quit(),
@@ -504,9 +571,12 @@ async function onReady() {
     const next = loop.setWake(Boolean(enabled))
     state.wake = next
     tray.setWake(next)
+    applyMicPolicy(next ? '打开唤醒词' : '关闭唤醒词')
     pushState({ wake: next, hint: hintText() })
     return { ok: true, wake: next }
   })
+  // 渲染进程启动时先问一次「麦克风该不该开」：策略要求关麦时连 getUserMedia 都不发。
+  ipcMain.handle('xiaoyin:mic-state', () => ({ mic: state.mic }))
   ipcMain.handle('xiaoyin:cancel', () => {
     if (loop && loop.cancel()) return { ok: true, action: 'cancel-recording' }
     bridge.cancel()
@@ -517,7 +587,12 @@ async function onReady() {
     log('渲染进程申请麦克风')
     return { ok: true, sampleRate: SAMPLE_RATE, device: '' }
   })
-  ipcMain.handle('xiaoyin:audio-stop', () => ({ ok: true }))
+  ipcMain.handle('xiaoyin:audio-stop', () => {
+    log('渲染进程释放麦克风')
+    // 渲染进程开麦失败（权限被拒、设备被占）也会走到这里：别让录音卡在 recording
+    if (loop && loop.state === 'recording') loop.cancel()
+    return { ok: true }
+  })
   ipcMain.on('xiaoyin:audio', (_event, samples, sampleRate) => {
     // 假麦克风模式下别把真麦克风的声音也混进来，两路一起进会直接听不清
     if (process.env.XIAOYIN_SIM_WAV) return
@@ -586,7 +661,11 @@ function registerShortcut() {
       return
     }
     showWindow()
-    if (loop && state.phase !== 'recording') loop.beginCapture('hotkey')
+    if (!loop || state.phase === 'recording') return
+    // 唤醒词关掉且用户选择了释放麦克风：热键这一下才临时开麦。
+    // 代价是没有预录（环形缓存是空的），开口太急的话头一两个字可能缺一点。
+    if (!state.mic) requestMic('热键')
+    if (!loop.beginCapture('hotkey')) applyMicPolicy('热键没能开录')
   })
   if (ok) {
     // 先试新的、再放旧的：新热键被别的程序占了也不会把手上能用的那个弄丢。

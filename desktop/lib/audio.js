@@ -280,6 +280,15 @@ class VoiceLoop extends EventEmitter {
     this.ringLength += chunk.length
   }
 
+  /**
+   * 丢掉环形缓存里的旧采样。
+   * 唤醒词关掉、麦克风被释放之后再开麦时用：否则 beginCapture 的预录会取到
+   * 几分钟前的那段声音（ringLength 一直停在上次关麦的位置）。
+   */
+  clearRing() {
+    this.ringLength = 0
+  }
+
   _tail(seconds) {
     const want = Math.min(this.ringLength, Math.round(seconds * SAMPLE_RATE))
     if (want <= 0) return new Float32Array(0)
