@@ -94,6 +94,8 @@ function loadConfig() {
     eventsDir: path.join(dataDir, 'events'),
     audioDir: path.join(dataDir, 'audio'),
     stateFile: path.join(dataDir, 'window.json'),
+    // 宿主进程号；0 表示没拿到（老版本 runtime.json），此时不做看门狗。
+    hostPid: positive(runtime.hostPid, 0),
     name,
     hotkey: text(runtime.hotkey, text(raw.hotkey, 'ctrl+alt+j')),
     maxSeconds: positive(runtime.maxSeconds, positive(raw.max_seconds, 20)),
