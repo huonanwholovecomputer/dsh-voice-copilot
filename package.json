@@ -15,9 +15,17 @@
   },
   "files": [
     "index.js",
+    "learning.js",
+    "pinyin-match.js",
     "client.js",
     "autostart.js",
     "cordis.patch.yml",
+    "docs/**",
+    ".agents/**",
+    "tools/**",
+    "!tools/learn_state.json",
+    "!tools/local_config.py",
+    "!tools/__pycache__/**",
     "locale/*.json",
     "icon.svg",
     "desktop/main.js",
@@ -29,7 +37,9 @@
     "desktop/data/**"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true

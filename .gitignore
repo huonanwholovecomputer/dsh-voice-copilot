@@ -30,3 +30,14 @@ tools/_ws.txt
 
 # 私有业务 preset：只放本机，不进公开仓库（可公开的骨架见 presets/example-assistant/）
 presets/private-*/
+
+# 学习记录：小印每轮的思考/工具调用/回复，含用户原话（已基础脱敏），属本机运行数据
+learning/
+# 临时分析脚本、解包产物
+.tmp-*
+
+# 本机私有配置：真实姓名、真实群名、台账/日志路径都在这里（模板见 tools/local_config.example.py）
+tools/local_config.py
+
+# pywinauto 探测时写在当前目录的日志
+@AutomationLog.txt
