@@ -41,3 +41,6 @@ tools/local_config.py
 
 # pywinauto 探测时写在当前目录的日志
 @AutomationLog.txt
+
+# 内含真实人名/学号/群名的订单来源分析，属本机数据（口径可参考 docs/白名单策略.md）
+docs/订单文件来源_*.md

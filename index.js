@@ -26,6 +26,7 @@ import path from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 import { startFloatingWindow, stopFloatingWindow } from './autostart.js'
+import { createLedgerApi } from './ledger-groups.js'
 import { createLearning } from './learning.js'
 import { createPinyinTool } from './pinyin-match.js'
 
@@ -68,6 +69,8 @@ export const Config = z.object({
   learningToolArgsChars: z.number().min(100).max(20000).default(2000).description('单条工具参数最多保留的字符数').volatile(),
   learningToolResultChars: z.number().min(100).max(20000).default(1500).description('单条工具结果最多保留的字符数').volatile(),
   learningRedact: z.boolean().default(true).description('落盘前打码手机号、身份证号与 wxid').volatile(),
+  ledgerDb: z.string().default('').description('微信文件台账 ledger.db 的绝对路径；「小印」管理页的群白名单从这里读写').volatile(),
+  printerLogDir: z.string().default('').description('打印机日志目录（订单来源分析用）；留空则用 %APPDATA%\\HN打印工具\\logs').volatile(),
 })
 
 const POLL_MS = 120
@@ -76,6 +79,13 @@ const SESSION_TITLE = '语音浮窗'
 // 所以页面半侧（client.js）用同源 fetch 就能取走这条待办，再调 uiWorkspace.openSession 切过去。
 const OPEN_ROUTE = '/__dsh-voice-copilot/open-session'
 const PERSONA_ROUTE = '/__dsh-voice-copilot/preset-persona'
+// 「小印」侧栏页的群白名单：一次读全表，按 username 切换 excluded。
+const LEDGER_ROUTE = '/__dsh-voice-copilot/ledger/chats'
+const LEDGER_EXCLUDE_ROUTE = '/__dsh-voice-copilot/ledger/exclude'
+// 「一键策略」：按订单来源自动圈定白名单（预览 / 应用 / 撤销）。
+const LEDGER_POLICY_ROUTE = '/__dsh-voice-copilot/ledger/policy'
+const LEDGER_POLICY_APPLY_ROUTE = '/__dsh-voice-copilot/ledger/policy/apply'
+const LEDGER_POLICY_UNDO_ROUTE = '/__dsh-voice-copilot/ledger/policy/undo'
 // 超过这个时间没人来取就作废：浮窗早就收起了，用户也不会希望下次打开 DSH 时突然被切会话。
 const OPEN_TTL_MS = 30_000
 // 不指定 cwd 时会话会落在 Host 进程的工作目录（profile 目录），DSH 侧栏里看不见。
@@ -156,6 +166,8 @@ export function apply(ctx, config = {}) {
   const currentName = () => liveText('name', '') || DEFAULT_NAME
   const currentCwd = () => liveText('cwd', '') || DEFAULT_CWD
   const currentPreset = () => liveText('agentPreset', '')
+  const currentLedgerDb = () => liveText('ledgerDb', '') || process.env.DSH_VOICE_COPILOT_LEDGER_DB || ''
+  const currentPrinterLogDir = () => liveText('printerLogDir', '') || process.env.DSH_VOICE_COPILOT_PRINTER_LOG_DIR || ''
 
   // 学习记录：默认开，落 dataDir/learning；本机把它指到仓库 learning/，这样在这个工作目录里
   // 直接读原始记录就能复盘。isHuman/isNoise 延迟引用（它们定义在后面），只在真正收到事件时才调用。
@@ -845,6 +857,35 @@ export function apply(ctx, config = {}) {
         }
       },
     }), 'dsh-voice-copilot: preset persona route')
+
+    // 「小印」侧栏页：群白名单列表与勾选切换。读的是台账 chats 表，
+    // 只改 excluded 标记；台账网页服务没开着也能用。
+    const ledgerApi = createLedgerApi({ dbPath: currentLedgerDb, logDir: currentPrinterLogDir, dataDir, log: (line) => log(line) })
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: LEDGER_ROUTE,
+      handler: (req, res) => { void ledgerApi.chats(req, res) },
+    }), 'dsh-voice-copilot: ledger chats route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: LEDGER_EXCLUDE_ROUTE,
+      handler: (req, res) => { void ledgerApi.exclude(req, res) },
+    }), 'dsh-voice-copilot: ledger exclude route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: LEDGER_POLICY_ROUTE,
+      handler: (req, res) => { void ledgerApi.policyPreview(req, res) },
+    }), 'dsh-voice-copilot: ledger policy route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: LEDGER_POLICY_APPLY_ROUTE,
+      handler: (req, res) => { void ledgerApi.policyApply(req, res) },
+    }), 'dsh-voice-copilot: ledger policy apply route')
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: LEDGER_POLICY_UNDO_ROUTE,
+      handler: (req, res) => { void ledgerApi.policyUndo(req, res) },
+    }), 'dsh-voice-copilot: ledger policy undo route')
   })
 
   // 先把运行时快照落盘，再拉起浮窗，避免浮窗先启动读到旧配置
