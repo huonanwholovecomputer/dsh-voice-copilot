@@ -867,6 +867,12 @@ textarea:focus-visible {
   outline-offset: 1px;
 }
 
+/* 输入框不画自己的焦点环：外层 .composer 的 focus-within 已经有一圈了，
+   再套一层方框会像「框里还有框」。 */
+.composer textarea:focus-visible {
+  outline: none;
+}
+
 /* ---------------- 拉宽之后别让正文一行跑到天边 ---------------- */
 
 .thread > .list,
