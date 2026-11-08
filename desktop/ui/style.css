@@ -1,6 +1,6 @@
 /* ===========================================================
    小印浮窗 · 渲染层样式
-   720×520 透明窗口，卡片四周留 12px 给阴影
+   默认 720×520 的透明窗口（四边可拖拽改大小），卡片四周留 12px 给阴影
    深色 + 细边框 + 蓝色点缀，不用渐变/发光/玻璃拟态
    =========================================================== */
 
@@ -89,6 +89,76 @@ body {
   letter-spacing: 0.4px;
   color: #eef1f6;
   line-height: 1;
+}
+
+/* 思考中：标题栏里的小胶囊，只有 phase=thinking 才亮 */
+.status {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 21px;
+  padding: 0 9px 0 8px;
+  border: 1px solid rgba(79, 140, 255, 0.26);
+  border-radius: 999px;
+  background: rgba(79, 140, 255, 0.1);
+  color: #a8c4ff;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.status.on {
+  display: inline-flex;
+  animation: status-in 0.18s ease-out;
+}
+
+.status-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5px;
+}
+
+.status-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: status-dot 1.05s ease-in-out infinite;
+}
+
+.status-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.status-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes status-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes status-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .timer {
@@ -686,12 +756,125 @@ body {
   transform: translate(-50%, 0);
 }
 
+/* ---------------- 改尺寸：四周隐形把手 + 右下角三撇 ---------------- */
+
+/* 把手铺在卡片外那 12px 透明边里：既不挡标题栏拖动，也不挡输入框点击 */
+.grip {
+  position: absolute;
+  z-index: 30;
+  -webkit-app-region: no-drag;
+  touch-action: none;
+}
+
+.grip-n {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.grip-s {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.grip-w {
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.grip-e {
+  right: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.grip-nw {
+  left: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.grip-ne {
+  right: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
+}
+
+.grip-sw {
+  left: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
+}
+
+.grip-se {
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+/* 拖动时不许光标在中途跳回箭头 */
+body.resizing,
+body.resizing * {
+  cursor: inherit !important;
+}
+
+/* 右下角三撇：窗口能改尺寸的唯一可见提示，平时很淡，划过卡片才清楚一点 */
+.resize-cue {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  z-index: 6;
+  width: 10px;
+  height: 10px;
+  color: rgba(255, 255, 255, 0.24);
+  transition: color 0.16s ease;
+  pointer-events: none;
+}
+
+.resize-cue svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.card:hover .resize-cue {
+  color: rgba(255, 255, 255, 0.44);
+}
+
 /* ---------------- 焦点可见性 ---------------- */
 
 button:focus-visible,
 textarea:focus-visible {
   outline: 1px solid rgba(79, 140, 255, 0.65);
   outline-offset: 1px;
+}
+
+/* ---------------- 拉宽之后别让正文一行跑到天边 ---------------- */
+
+.thread > .list,
+.thread > .empty {
+  width: 100%;
+  max-width: 820px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* ---------------- 尺寸兜底：窄一点也不能挤爆 ---------------- */
@@ -712,6 +895,10 @@ textarea:focus-visible {
   .hint {
     font-size: 11px;
   }
+  .status {
+    padding: 0 7px 0 6px;
+    font-size: 10.5px;
+  }
 }
 
 @media (max-height: 460px) {
@@ -731,6 +918,10 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .dot,
   .cursor {
+    animation: none !important;
+  }
+  .status,
+  .status-dots i {
     animation: none !important;
   }
   .toast {

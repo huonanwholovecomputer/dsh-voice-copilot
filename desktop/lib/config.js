@@ -134,13 +134,26 @@ function loadWindowState(config) {
   return { pos: pos && pos.every(Number.isFinite) ? pos : null, size: size && size.every(Number.isFinite) ? size : null }
 }
 
-function saveWindowState(config, state) {
+/**
+ * 窗口位置/尺寸。patch 里给什么就写什么，没给的沿用文件里原来的值——
+ * 拖动位置和拖动尺寸是两个回调，不能互相把对方抹掉。
+ */
+function saveWindowState(config, patch) {
   try {
     fs.mkdirSync(config.dataDir, { recursive: true })
-    const payload = { pos: state.pos || null, size: state.size || null, savedAt: new Date().toISOString() }
+    const previous = readJson(config.stateFile)
+    const pick = (value, fallback) => {
+      if (Array.isArray(value) && value.length === 2 && value.every(Number.isFinite)) return value
+      return fallback
+    }
+    const payload = {
+      pos: pick(patch && patch.pos, pick(previous.pos, null)),
+      size: pick(patch && patch.size, pick(previous.size, null)),
+      savedAt: new Date().toISOString(),
+    }
     fs.writeFileSync(config.stateFile, JSON.stringify(payload, null, 2) + '\n', 'utf8')
   } catch {
-    /* 记不住位置不算故障 */
+    /* 记不住位置/尺寸不算故障 */
   }
 }
 

@@ -15,6 +15,13 @@
     <header class="titlebar" id="titlebar">
       <span class="dot" id="dot" aria-hidden="true"></span>
       <h1 class="brand" id="brand">语音助手</h1>
+
+      <!-- 思考中：只有 phase=thinking 才出现，和下面那行提示是两回事 -->
+      <span class="status" id="status" role="status">
+        <span class="status-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="status-text">思考中</span>
+      </span>
+
       <span class="timer" id="timer">0:00</span>
 
       <span class="hint" id="hint">
@@ -77,6 +84,26 @@
     <div class="toast" id="toast" role="status">
       <span class="toast-text" id="toastText"></span>
     </div>
+
+    <!-- 右下角三撇：告诉用户这块能拖着改大小 -->
+    <div class="resize-cue" aria-hidden="true">
+      <svg viewBox="0 0 10 10" fill="none">
+        <path d="M9 3.4 L3.4 9 M9 6.4 L6.4 9"
+              stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+      </svg>
+    </div>
+  </div>
+
+  <!-- 改尺寸的把手：铺在四周 12px 透明边上，看不见但能拖 -->
+  <div class="resize-grips" aria-hidden="true">
+    <span class="grip grip-n" data-edge="n"></span>
+    <span class="grip grip-s" data-edge="s"></span>
+    <span class="grip grip-w" data-edge="w"></span>
+    <span class="grip grip-e" data-edge="e"></span>
+    <span class="grip grip-nw" data-edge="nw"></span>
+    <span class="grip grip-ne" data-edge="ne"></span>
+    <span class="grip grip-sw" data-edge="sw"></span>
+    <span class="grip grip-se" data-edge="se"></span>
   </div>
 
   <script src="app.js"></script>
