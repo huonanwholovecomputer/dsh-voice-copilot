@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('xiaoyin', {
   focusSession: () => ipcRenderer.invoke('xiaoyin:focus-session'),
   setWake: (on) => ipcRenderer.invoke('xiaoyin:set-wake', Boolean(on)),
   cancel: () => ipcRenderer.invoke('xiaoyin:cancel'),
+  stopRecording: () => ipcRenderer.invoke('xiaoyin:stop-recording'),
   audio: {
     start: () => ipcRenderer.invoke('xiaoyin:audio-start'),
     stop: () => ipcRenderer.invoke('xiaoyin:audio-stop'),

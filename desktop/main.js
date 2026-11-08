@@ -604,6 +604,11 @@ async function onReady() {
     setPhase('sleeping')
     return { ok: true, action: 'cancel-reply' }
   })
+  // 界面上的「停止录音」：说的是停这一句、照常送出去，不是把这段丢掉（那是 Esc / cancel）。
+  ipcMain.handle('xiaoyin:stop-recording', () => {
+    const stopped = Boolean(loop && loop.stop())
+    return { ok: true, stopped }
+  })
   ipcMain.handle('xiaoyin:audio-start', () => {
     log('渲染进程申请麦克风')
     return { ok: true, sampleRate: SAMPLE_RATE, device: '' }

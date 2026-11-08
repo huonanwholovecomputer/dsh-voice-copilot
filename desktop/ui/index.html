@@ -63,9 +63,16 @@
 
     <!-- 底部：电平波形 + 输入框 -->
     <footer class="footer">
-      <div class="meter" id="meter" aria-hidden="true">
-        <span class="meter-label"><span class="meter-dot"></span>正在聆听</span>
-        <canvas id="levelCanvas"></canvas>
+      <div class="meter" id="meter">
+        <span class="meter-label" aria-hidden="true"><span class="meter-dot"></span>正在聆听</span>
+        <canvas id="levelCanvas" aria-hidden="true"></canvas>
+        <button class="stop-btn" id="stopRecording" type="button"
+                title="结束这段录音，把说过的话发出去（Esc 是整段丢掉）"
+                aria-label="停止录音">
+          <svg viewBox="0 0 12 12" aria-hidden="true">
+            <rect x="3" y="3" width="6" height="6" rx="1.4" fill="currentColor" />
+          </svg>
+        </button>
       </div>
       <div class="composer" id="composer">
         <textarea id="input" rows="1" spellcheck="false"

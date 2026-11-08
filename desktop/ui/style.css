@@ -545,6 +545,45 @@ body {
   display: block;
 }
 
+/* 录音时的「停止」：把这一句结束掉、照常发出去；Esc 是整段丢掉 */
+.stop-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid rgba(255, 107, 107, 0.32);
+  border-radius: 7px;
+  background: rgba(255, 107, 107, 0.12);
+  color: #ff8f8f;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.stop-btn:hover {
+  border-color: rgba(255, 107, 107, 0.55);
+  background: rgba(255, 107, 107, 0.2);
+  color: #ffb2b2;
+}
+
+.stop-btn:active {
+  transform: translateY(0.5px);
+}
+
+.stop-btn:focus-visible {
+  outline: 1px solid rgba(255, 107, 107, 0.65);
+  outline-offset: 1px;
+}
+
+.stop-btn svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
 .composer {
   display: flex;
   align-items: flex-end;
