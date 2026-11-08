@@ -264,6 +264,16 @@ export function apply(ctx, config = {}) {
     const controller = ctx.get('workspaceController')
     const workspace = registry ? registry.get(workspaceId) : undefined
     if (workspace && Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(sessionId)) return true
+    // 首选工作区对象自己的 attachSession：宿主 sessionController.create 内部就是这么挂的，
+    // 认的「accounting」比 insertSessionBefore 宽，刚建好的会话用它最稳。
+    if (workspace && typeof workspace.attachSession === 'function') {
+      try {
+        await workspace.attachSession(sessionId)
+        return true
+      } catch (error) {
+        log(`attachSession failed: ${error}`)
+      }
+    }
     if (!controller) return false
     try {
       await controller.insertSessionBefore({ workspaceId, sessionId })
@@ -412,6 +422,12 @@ export function apply(ctx, config = {}) {
       log(`rename failed: ${error}`)
     }
     log(`created session ${sessionId} in ${cwd}${archiveOld ? '（换了新的一段）' : ''}`)
+    // create({workspaceId}) 正常会把会话挂进工作区，但实测有漏（2026-11-08：
+    // session-6d19f96e 就是这么掉进侧栏「未分组」的），这里再核一次、没挂上就补插。
+    if (workspaceId) {
+      const attached = await adoptIntoWorkspace(workspaceId, sessionId)
+      log(`workspace attach ${attached ? 'ok' : 'failed'} session=${sessionId} workspace=${workspaceId}`)
+    }
     return await ensurePersona(sessionId)
   }
 
@@ -434,12 +450,27 @@ export function apply(ctx, config = {}) {
       try {
         const resolved = await ctx.sessionController.resolveAgent(state.sessionId)
         if (resolved && resolved.agent) {
-          if (!workspaceId || state.workspaceId === workspaceId) return await ensurePersona(state.sessionId)
-          if (await adoptIntoWorkspace(workspaceId, state.sessionId)) {
-            writeState({ ...state, workspaceId })
-            log(`adopted session ${state.sessionId} into workspace ${workspaceId}`)
-            return await ensurePersona(state.sessionId)
+          // 别信 state.workspaceId：它只说明「建会话时打算进哪个工作区」，不代表真进去了。
+          // 宿主 create({workspaceId}) 会 attach，但实测有漏；而原来的早退
+          // （state.workspaceId === workspaceId 就直接 return）让兜底 adopt 永远跑不到，
+          // 于是漏挂的会话在侧栏「未分组」里一躺就是好几天。改为每次都按
+          // workspace.sessionIds 实地核对，不在就补插（adoptIntoWorkspace 本身幂等）。
+          if (workspaceId) {
+            const registry = ctx.get('workspaceRegistry')
+            const workspace = registry ? registry.get(workspaceId) : undefined
+            const inWorkspace = Boolean(
+              workspace && Array.isArray(workspace.sessionIds) && workspace.sessionIds.includes(state.sessionId),
+            )
+            if (!inWorkspace) {
+              if (await adoptIntoWorkspace(workspaceId, state.sessionId)) {
+                writeState({ ...state, workspaceId })
+                log(`adopted session ${state.sessionId} into workspace ${workspaceId}`)
+              }
+            } else if (state.workspaceId !== workspaceId) {
+              writeState({ ...state, workspaceId })
+            }
           }
+          return await ensurePersona(state.sessionId)
         }
       } catch (error) {
         log(`resolveAgent failed: ${error}`)
