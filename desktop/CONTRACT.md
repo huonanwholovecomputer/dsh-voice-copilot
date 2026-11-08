@@ -56,7 +56,8 @@ Array<{
 | `xiaoyin.hide()` | 收起窗口（回到 `sleeping`，唤醒词继续听）。 |
 | `xiaoyin.focusSession()` | 「回到会话」：请宿主把 DSH 切到「语音浮窗」会话（队列 `{kind:'open'}`），把 DSH 主窗口切到前台，然后把浮窗收起来（不然置顶的浮窗挡住，用户看不出变化）。 |
 | `xiaoyin.setWake(on)` | 开/关唤醒词监听。 |
-| `xiaoyin.cancel()` | 取消当前录音或打断当前回复。 |
+| `xiaoyin.cancel()` | 取消当前录音或打断当前回复。**整段丢掉**，不送去识别。Esc 走这条。 |
+| `xiaoyin.stopRecording()` | 手动结束当前这一句录音：把已说的部分送去识别、照常发出（返回 `{ok, stopped}`；没在录音时 `stopped:false`）。一个字都没说就静默取消，不弹「没听清」。界面上电平条右侧的红色方块按钮走这条。 |
 | `xiaoyin.audio.start()` | 申请麦克风并开始推流，`Promise<{ ok: boolean, sampleRate: number, device: string, error?: string }>`。 |
 | `xiaoyin.audio.stop()` | 停止推流并释放麦克风。 |
 | `xiaoyin.audio.push(samples, sampleRate)` | 推一段 **Float32** 单声道 PCM（值域 -1..1）。 |

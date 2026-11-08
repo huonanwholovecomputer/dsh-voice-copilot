@@ -19,6 +19,7 @@
     focusSession: () => Promise.resolve(),
     setWake: () => Promise.resolve(),
     cancel: () => Promise.resolve(),
+    stopRecording: () => Promise.resolve({ ok: true, stopped: false }),
     resize: () => {},
     audio: {
       start: () => Promise.resolve({ ok: true, sampleRate: 16000, device: 'stub' }),
@@ -415,6 +416,12 @@
 
   $('backToSession').addEventListener('click', () => {
     Promise.resolve(api.focusSession()).catch(() => {})
+  })
+
+  // 停止录音：结束这一句、照常送去识别（Esc 是整段丢掉，别混）
+  $('stopRecording').addEventListener('click', (e) => {
+    e.preventDefault()
+    Promise.resolve(api.stopRecording()).catch(() => {})
   })
 
   // 点消息区空白处把焦点还给输入框（别抢走文字选中）

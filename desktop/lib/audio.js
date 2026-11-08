@@ -404,6 +404,21 @@ class VoiceLoop extends EventEmitter {
     return false
   }
 
+  /**
+   * 手动结束这一句（界面上的「停止录音」）：有内容就照常送去识别、发出去，
+   * 一个字都没说就当取消——不然用户点了会收到一句「没听清」。
+   */
+  stop() {
+    if (this.state !== 'recording') return false
+    const capture = this.capture
+    if (!capture || !capture.hasSpeech) {
+      this._abortCapture('用户停止（没说话）', true)
+      return true
+    }
+    void this._finishCapture('manual')
+    return true
+  }
+
   async _finishCapture(reason) {
     const capture = this.capture
     if (!capture) return
