@@ -8,14 +8,29 @@
  * 隐藏方式刻意用「透明度 0 + 鼠标穿透」而不是 win.hide()：
  * 页面一旦真的被隐藏，Web Audio 采音和 AudioWorklet 会被浏览器节流甚至挂起，
  * 唤醒词就听不见了。常驻一个透明窗口的代价是内存，换来的是采音不断。
+ *
+ * 尺寸：默认 720×520，可以由用户拖四边/四角改，改完记在 window.json 的 size。
+ * 特意没开 BrowserWindow 的 resizable——Electron 文档明确说透明窗口开原生
+ * resizable 可能把透明打坏（Windows 上加 WS_THICKFRAME 会掉分层/掉圆角），
+ * 所以改成界面里铺 8 个隐形把手，自己收拖动、自己 setBounds。
  */
 'use strict'
 
 const path = require('node:path')
 const { BrowserWindow, screen } = require('electron')
 
-const UI_WIDTH = 720
-const UI_HEIGHT = 520
+const DEFAULT_WIDTH = 720
+const DEFAULT_HEIGHT = 520
+// 再小标题栏就塞不下「思考中」+ 恢复/关闭按钮了
+const MIN_WIDTH = 420
+const MIN_HEIGHT = 320
+// 旧名字：以前尺寸写死，外面可能还在引
+const UI_WIDTH = DEFAULT_WIDTH
+const UI_HEIGHT = DEFAULT_HEIGHT
+// 位置/尺寸允许顶出工作区一点点，给「贴边」的旧位置留余地
+const SLACK = 40
+
+const clampNumber = (value, min, max) => Math.min(Math.max(value, min), max)
 
 class FloatingWindow {
   constructor({ config, log, preload, indexPath, state, onMoved, onReady }) {
@@ -32,10 +47,10 @@ class FloatingWindow {
   }
 
   create() {
-    const { x, y } = this._initialBounds()
+    const { x, y, width, height } = this._initialBounds()
     this.win = new BrowserWindow({
-      width: UI_WIDTH,
-      height: UI_HEIGHT,
+      width,
+      height,
       x,
       y,
       frame: false,
@@ -88,28 +103,97 @@ class FloatingWindow {
     return this.win
   }
 
-  _initialBounds() {
-    const primary = screen.getPrimaryDisplay().workArea
-    const saved = this.state.pos
-    if (Array.isArray(saved) && saved.length === 2) {
-      const clamped = this._clamp(saved[0], saved[1])
-      if (clamped) return clamped
+  /** 想要的尺寸：优先用存下来的，其次默认值。0/负数当没存过。 */
+  _wantedSize() {
+    const saved = Array.isArray(this.state.size) ? this.state.size.map(Number) : null
+    const usable = (value) => Number.isFinite(value) && value > 0
+    return {
+      width: saved && usable(saved[0]) ? saved[0] : DEFAULT_WIDTH,
+      height: saved && usable(saved[1]) ? saved[1] : DEFAULT_HEIGHT,
     }
-    // 默认：主屏底部居中，离底边 24 px（和原来 Python 版的位置习惯一致）
-    const x = Math.round(primary.x + (primary.width - UI_WIDTH) / 2)
-    const y = Math.round(primary.y + primary.height - UI_HEIGHT - 24)
-    const display = screen.getPrimaryDisplay()
-    this.log(`屏幕 workArea=${display.workArea.width}x${display.workArea.height}+${display.workArea.x}+${display.workArea.y} scale=${display.scaleFactor} 窗口=${x},${y}`)
-    return { x, y }
   }
 
-  _clamp(x, y) {
+  /** 当前尺寸：窗口还活着就以窗口为准。 */
+  _size() {
+    if (this.win && !this.win.isDestroyed()) {
+      const [width, height] = this.win.getSize()
+      return { width, height }
+    }
+    return this._wantedSize()
+  }
+
+  /** 把尺寸夹进「最小」和「从 x,y 出发还剩多少工作区」之间。 */
+  _fitSize(area, x, y, wanted) {
+    const maxWidth = Math.max(MIN_WIDTH, area.x + area.width - x)
+    const maxHeight = Math.max(MIN_HEIGHT, area.y + area.height - y)
+    return {
+      width: Math.round(clampNumber(Number(wanted.width) || DEFAULT_WIDTH, MIN_WIDTH, maxWidth)),
+      height: Math.round(clampNumber(Number(wanted.height) || DEFAULT_HEIGHT, MIN_HEIGHT, maxHeight)),
+    }
+  }
+
+  _initialBounds() {
+    const display = screen.getPrimaryDisplay()
+    const area = display.workArea
+    const wanted = this._wantedSize()
+    const saved = this.state.pos
+
+    if (Array.isArray(saved) && saved.length === 2 && saved.every(Number.isFinite)) {
+      // 老位置 + 老尺寸：显示器换了也要塞得回去
+      const x = Math.round(saved[0])
+      const y = Math.round(saved[1])
+      const size = this._fitSize(area, x, y, wanted)
+      const clamped = this._clamp(x, y, size)
+      return { x: clamped.x, y: clamped.y, width: size.width, height: size.height }
+    }
+
+    // 默认：主屏底部居中，离底边 24 px（和原来 Python 版的位置习惯一致）
+    const size = {
+      width: Math.round(clampNumber(wanted.width, MIN_WIDTH, Math.max(MIN_WIDTH, area.width))),
+      height: Math.round(clampNumber(wanted.height, MIN_HEIGHT, Math.max(MIN_HEIGHT, area.height))),
+    }
+    const x = Math.round(area.x + (area.width - size.width) / 2)
+    const y = Math.round(area.y + area.height - size.height - 24)
+    this.log(`屏幕 workArea=${display.workArea.width}x${display.workArea.height}+${display.workArea.x}+${display.workArea.y} scale=${display.scaleFactor} 窗口=${x},${y} ${size.width}x${size.height}`)
+    return { x, y, width: size.width, height: size.height }
+  }
+
+  _clamp(x, y, size = this._size()) {
     const point = { x: Math.round(x), y: Math.round(y) }
     const display = screen.getDisplayNearestPoint(point)
     const area = display.workArea
-    const clampedX = Math.min(Math.max(point.x, area.x - 40), area.x + area.width - UI_WIDTH + 40)
-    const clampedY = Math.min(Math.max(point.y, area.y - 20), area.y + area.height - UI_HEIGHT + 20)
+    const clampedX = Math.min(Math.max(point.x, area.x - SLACK), area.x + area.width - size.width + SLACK)
+    const clampedY = Math.min(Math.max(point.y, area.y - 20), area.y + area.height - size.height + 20)
     return { x: Math.round(clampedX), y: Math.round(clampedY) }
+  }
+
+  /**
+   * 拖动把手改尺寸。edge 里带 n/w 时窗口原点跟着动，对边钉住不动。
+   * 传进来的是「想要的绝对尺寸」（渲染进程按屏幕坐标算的），这里只负责夹。
+   */
+  resizeTo(width, height, edge = 'se') {
+    if (!this.win || this.win.isDestroyed()) return
+    const [x, y] = this.win.getPosition()
+    const [currentWidth, currentHeight] = this.win.getSize()
+    const area = screen.getDisplayNearestPoint({ x, y }).workArea
+    const right = x + currentWidth
+    const bottom = y + currentHeight
+    const movesLeft = String(edge).includes('w')
+    const movesTop = String(edge).includes('n')
+
+    const maxWidth = movesLeft ? right - (area.x - SLACK) : area.x + area.width - x + SLACK
+    const maxHeight = movesTop ? bottom - (area.y - 20) : area.y + area.height - y + 20
+    const nextWidth = Math.round(clampNumber(Number(width) || currentWidth, MIN_WIDTH, Math.max(MIN_WIDTH, maxWidth)))
+    const nextHeight = Math.round(clampNumber(Number(height) || currentHeight, MIN_HEIGHT, Math.max(MIN_HEIGHT, maxHeight)))
+    if (nextWidth === currentWidth && nextHeight === currentHeight) return
+
+    const bounds = { x, y, width: nextWidth, height: nextHeight }
+    if (movesLeft) bounds.x = right - nextWidth
+    if (movesTop) bounds.y = bottom - nextHeight
+    this.win.setBounds(bounds, false)
+    this.state.pos = [bounds.x, bounds.y]
+    this.state.size = [nextWidth, nextHeight]
+    this._scheduleSave()
   }
 
   _scheduleSave() {
@@ -118,7 +202,9 @@ class FloatingWindow {
     this._saveTimer = setTimeout(() => {
       if (!this.win || this.win.isDestroyed()) return
       const [x, y] = this.win.getPosition()
+      const [width, height] = this.win.getSize()
       this.state.pos = [x, y]
+      this.state.size = [width, height]
       if (this.onMoved) this.onMoved(this.state)
     }, 400)
   }
@@ -171,4 +257,12 @@ class FloatingWindow {
   }
 }
 
-module.exports = { FloatingWindow, UI_WIDTH, UI_HEIGHT }
+module.exports = {
+  FloatingWindow,
+  UI_WIDTH,
+  UI_HEIGHT,
+  DEFAULT_WIDTH,
+  DEFAULT_HEIGHT,
+  MIN_WIDTH,
+  MIN_HEIGHT,
+}

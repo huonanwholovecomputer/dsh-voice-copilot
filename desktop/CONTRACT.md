@@ -61,6 +61,7 @@ Array<{
 | `xiaoyin.audio.stop()` | 停止推流并释放麦克风。 |
 | `xiaoyin.audio.push(samples, sampleRate)` | 推一段 **Float32** 单声道 PCM（值域 -1..1）。 |
 | `xiaoyin.audio.state()` | 问主进程现在该不该开麦，`Promise<{ mic: boolean }>`；启动时先调用它，返回值也是 `onState` 里 `mic` 的初值。 |
+| `xiaoyin.resize(width, height, edge)` | 改窗口尺寸：`width`/`height` 是**想要的目标宽高**（不是增量），`edge` 是用户拖的那条边（`n`/`s`/`e`/`w` 或四角 `nw`/`ne`/`sw`/`se`，默认 `se`）。主进程负责夹到最小 420×320、夹进当前屏幕工作区，并在拖 `n`/`w` 边时把窗口原点一起挪（钉住对边），所以调用方只管报目标尺寸。 |
 
 ## 3. 采音要求（渲染层实现）
 
@@ -75,6 +76,9 @@ Array<{
 
 - `Enter` 发送，`Shift+Enter` 换行，`Esc` 暂停当前这一下（停录 / 打断回复），**不收起窗口**。
 - 头部整条可拖动（`-webkit-app-region: drag`），按钮/输入框必须 `no-drag`。
-- 窗口 **720×520**，透明、无边框、圆角 18px；内容不许溢出，正文区自己滚动。
+- 窗口 **默认 720×520**，透明、无边框、圆角 18px；内容不许溢出，正文区自己滚动。
+- 尺寸可调：`<body>` 里 8 个隐形把手（四条边 + 四个角，各 10~14px）拖拽，走 `xiaoyin.resize()`，最小 420×320；调完的尺寸存进 `window.json` 的 `size`，下次启动照旧。**不要**用 BrowserWindow 的 `resizable`——透明窗口开原生缩放会把透明/圆角打坏。
+- 拉宽之后正文列限宽 820px 居中（`.thread > .list` / `.empty`），别让一行字横到天边。
+- `phase === 'thinking'` 时标题栏显示「思考中」胶囊（`.status.on`，三点跳动）；其它阶段藏起来。
 - 关闭按钮 `×` 调 `xiaoyin.hide()`（**不是**退出程序）。
 - 不要自己写 `window.close()`，不要开 `target=_blank`。

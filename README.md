@@ -20,6 +20,8 @@
 
 小印是本地打印项目（打印机接单 + 微信台账）的**附属项目**，不是另起一摊的通用助手：接单、出纸、记台账才是主线，小印只把「这份文件是谁发的、这个群该不该查」搬进语音。台账 `ledger.db` 与打印机日志都是打印项目那边的产物，本仓库一律**只读不写**；`tools/` 里的检索（`funnel.py`）、样本与评测（`order_labels.py` / `eval_funnel.py` / `learn_loop.py`）、侧栏页的白名单（`whitelist-policy.js`）也都是围着这套数据转的。没有那套数据，小印就退化成一个外接 DSH 会话的语音开麦工具。
 
+主线仓库在 <https://github.com/huonanwholovecomputer/h_n-printer>（客户端、订单/用户管理、出纸流程都在那边，本仓库只消费它产出的台账与日志）。
+
 仓库本身是可公开的骨架：真实姓名、真实群名、本机台账路径都走 `tools/local_config.py`（已被 `.gitignore` 挡住），`learning/` 里的对话记录同样不进仓库。
 
 ## 装起来
@@ -159,7 +161,7 @@ voice_pinyin({ action: "match", heard: "李虎", candidates: ["李福生", "李�
 | 渲染进程 | `ui/{index.html,style.css,app.js,pcm-worklet.js}` | 画面与输入；`getUserMedia` 采 16 kHz 单声道，AudioWorklet 128 帧一块推给主进程 |
 | preload | `preload.js` | 只开 `window.xiaoyin` 一组方法，`contextIsolation: true` / `nodeIntegration: false` |
 
-- 窗口 720×520、圆角、透明、无边框、置顶（`screen-saver` 级）。**隐藏不是 `win.hide()`**，是 `setOpacity(0)` + 鼠标穿透——真隐藏会让渲染进程被节流，Web Audio 掉帧。
+- 窗口默认 720×520、圆角、透明、无边框、置顶（`screen-saver` 级）。四条边和四个角都能拖（最小 420×320），尺寸记在 `window.json` 的 `size` 里，下次启动照旧。没开 BrowserWindow 的 `resizable`——透明窗口开原生缩放会把透明和圆角打坏，所以是 UI 里铺 8 个隐形把手，走 `xiaoyin.resize()` 让主进程 `setBounds`。**隐藏不是 `win.hide()`**，是 `setOpacity(0)` + 鼠标穿透——真隐藏会让渲染进程被节流，Web Audio 掉帧。
 - 麦克风默认只开一路、常驻：渲染进程一直采，主进程里既做唤醒词、又做命令录音，所以「听见小印」到「开始录」中间不丢音（唤醒时把最近 150 ms 一起带上，热键时带 600 ms）。勾上「关唤醒词时释放麦克风」后改成按需：关唤醒词就 `track.stop()`（任务栏图标灭），热键时临时开麦、录完再放。
 - 识别引擎不另装：直接 require DSH 安装目录 `resources/app.asar.unpacked/node_modules/sherpa-onnx-node`（原生模块按 N-API 编的，Electron 里能直接加载）。模型还是 `app/config.json` 里那个 `model`（SenseVoice int8，239 MB）。
 - 识别结果不回宿主转写：本机 desktop profile 的 `speechToText` 服务是空的（`speech={"available":false}`），所以 `desktop/` 把文字连同 wav 路径一起入队，`index.js` 看到有 `text` 就直接用，不碰转写服务。
@@ -193,6 +195,7 @@ Python 回退版还支持 FireRedASR2 int8（`models/fire-red-asr2-int8/`、`fir
 | `XIAOYIN_SIM_CAPTURE=1` | 600 ms 后直接开录，绕过唤醒词 |
 | `XIAOYIN_DEBUG_AUDIO=1` | 每 3 s 打一行音频帧统计和电平 |
 | `XIAOYIN_SHOT=<png>` | 把窗口截成图（`XIAOYIN_SHOT_QUIT=1` 截完退出） |
+| `XIAOYIN_PHASE=thinking` | 起来就把状态设成指定阶段（`sleeping`/`recording`/`thinking`/`replying`/`error`），配合截图看「思考中」这类状态条 |
 | `XIAOYIN_DATA_DIR=<dir>` | 换一套队列目录（autostart 会自动带上真实的那套） |
 
 ## 已验证
@@ -204,6 +207,7 @@ Python 回退版还支持 FireRedASR2 int8（`models/fire-red-asr2-int8/`、`fir
 - 真麦克风：渲染进程按 16 kHz 稳定推流（`[audio] 375 帧 / 3.0s`）；房间里正常说话能被认出并送进会话（顺手验了「说错话 → 助手回『这句没听明白』」这一路）。
 - 自启：`{"started":true,"engine":"electron","pid":...+exe:...\\electron.exe}`，第二次调用返回 `already-running`；热键与还在跑的 Python 版互斥，杀掉旧的之后立刻注册成功。
 - 窗口位置：主屏 2560×1600 / 150% 缩放下落在底部居中（workArea 里 `(1707-720)/2`、离底 `520+24`），DPI 感知截图核对过不越界。
+- 窗口尺寸：CDP 驱动实测——右下角拖 +40/+40 得到 +40/+40；上边下拖 44 得到高 -44、`y` +46（底边钉住）；左边右拖 44 得到宽 -44、`x` +45（右边钉住）；强塞 120×90 被夹到 420×320；`window.json` 落了 `size`，重启后按存的尺寸恢复。
 
 ## 已知限制
 

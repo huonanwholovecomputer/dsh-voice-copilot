@@ -127,6 +127,17 @@ function setPhase(phase, extra) {
   pushState({ phase, recordingMs: 0, error: '', ...(extra || {}) })
 }
 
+/**
+ * 调试用：把窗口钉在某个状态上，配合 XIAOYIN_SHOT 截图核对界面。
+ * XIAOYIN_PHASE=thinking / recording / replying / error / sleeping
+ */
+function applyDemoPhase() {
+  const want = String(process.env.XIAOYIN_PHASE || '').trim()
+  if (!want) return
+  if (!['sleeping', 'recording', 'thinking', 'replying', 'error'].includes(want)) return
+  setPhase(want, want === 'error' ? { error: '示例错误：状态条长这样' } : {})
+}
+
 function hintText() {
   const name = String(config.name || '语音助手')
   const hotkey = String(config.hotkey || 'ctrl+alt+j').toUpperCase().replace(/\+/g, '+')
@@ -457,9 +468,11 @@ if (!gotLock) {
 
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
-    if (windowRef) {
-      const [x, y] = windowRef.win && !windowRef.win.isDestroyed() ? windowRef.win.getPosition() : [0, 0]
-      saveWindowState(config, { pos: [x, y] })
+    // 窗口已经没了就别存：以前这里存过 [0,0]，会把记住的位置抹掉
+    if (windowRef && windowRef.win && !windowRef.win.isDestroyed()) {
+      const [x, y] = windowRef.win.getPosition()
+      const [width, height] = windowRef.win.getSize()
+      saveWindowState(config, { pos: [x, y], size: [width, height] })
     }
     if (tray) tray.destroy()
   })
@@ -481,14 +494,17 @@ async function onReady() {
     preload: PRELOAD,
     indexPath: INDEX_HTML,
     state: windowState,
-    onMoved: (next) => saveWindowState(config, { pos: next.pos }),
+    onMoved: (next) => saveWindowState(config, { pos: next.pos, size: next.size }),
     // 页面加载完再补一次状态：启动时 pushState 早于渲染进程订阅，会丢掉称呼/热键。
-    onReady: () => pushState({
-      name: config.name,
-      hotkey: String(config.hotkey || 'ctrl+alt+j').toUpperCase(),
-      wake: state.wake,
-      hint: hintText(),
-    }),
+    onReady: () => {
+      pushState({
+        name: config.name,
+        hotkey: String(config.hotkey || 'ctrl+alt+j').toUpperCase(),
+        wake: state.wake,
+        hint: hintText(),
+      })
+      applyDemoPhase()
+    },
   })
   windowRef.create()
 
@@ -544,6 +560,11 @@ async function onReady() {
   ipcMain.handle('xiaoyin:hide', () => {
     hideWindow()
     return { ok: true }
+  })
+  // 拖四边/四角改尺寸：渲染进程按屏幕坐标算好想要的绝对宽高，
+  // 主进程只负责夹进合法范围、钉住对边，并顺手把尺寸存下来。
+  ipcMain.on('xiaoyin:resize', (_event, width, height, edge) => {
+    if (windowRef) windowRef.resizeTo(width, height, edge)
   })
   ipcMain.handle('xiaoyin:focus-session', async () => {
     try {

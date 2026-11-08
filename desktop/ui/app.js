@@ -19,6 +19,7 @@
     focusSession: () => Promise.resolve(),
     setWake: () => Promise.resolve(),
     cancel: () => Promise.resolve(),
+    resize: () => {},
     audio: {
       start: () => Promise.resolve({ ok: true, sampleRate: 16000, device: 'stub' }),
       stop: () => Promise.resolve(),
@@ -38,6 +39,7 @@
   const list = $('list')
   const emptyEl = $('empty')
   const hintText = $('hintText')
+  const statusEl = $('status')
   const micRetry = $('micRetry')
   const timerEl = $('timer')
   const meterEl = $('meter')
@@ -90,6 +92,9 @@
         : state.hint
     hintText.classList.toggle('err', isError || micFailed)
     micRetry.classList.toggle('show', micFailed)
+
+    // 「思考中」只在等第一个字的时候出现：说完了、模型还在想，界面不能像卡死
+    if (statusEl) statusEl.classList.toggle('on', state.phase === 'thinking')
 
     if (state.phase === 'recording') {
       meterEl.classList.add('on')
@@ -650,6 +655,102 @@
     startAudio()
   })
 
+  /* ---------------- 9.5 拖边缘改尺寸 ---------------- */
+
+  // 窗口是透明无边框的（main.js 里刻意 resizable:false，开了原生 resizable
+  // 有可能把透明/圆角打坏），所以原生边框拖不了。这里在卡片外那圈 12px
+  // 透明边上铺了 8 个隐形把手：按下记起始尺寸，移动时按屏幕坐标算想要的
+  // 绝对宽高，rAF 节流后交给主进程 setBounds（主进程负责夹最小尺寸、钉对边）。
+  const EDGE_CURSOR = {
+    n: 'ns-resize',
+    s: 'ns-resize',
+    e: 'ew-resize',
+    w: 'ew-resize',
+    nw: 'nwse-resize',
+    se: 'nwse-resize',
+    ne: 'nesw-resize',
+    sw: 'nesw-resize',
+  }
+
+  const resize = { active: false, edge: '', startX: 0, startY: 0, width: 0, height: 0, raf: 0, pending: null }
+
+  function flushResize() {
+    resize.raf = 0
+    const pending = resize.pending
+    resize.pending = null
+    if (!pending || !resize.active) return
+    try {
+      api.resize(pending.width, pending.height, pending.edge)
+    } catch (err) {
+      console.warn('[xiaoyin] 改尺寸失败', err)
+    }
+  }
+
+  function onResizeMove(event) {
+    if (!resize.active) return
+    const dx = event.screenX - resize.startX
+    const dy = event.screenY - resize.startY
+    const growsLeft = resize.edge.includes('w')
+    const growsRight = resize.edge.includes('e')
+    const growsTop = resize.edge.includes('n')
+    const growsBottom = resize.edge.includes('s')
+    resize.pending = {
+      // 往上/往左拖是「长个子」，符号要反过来
+      width: resize.width + (growsLeft ? -dx : growsRight ? dx : 0),
+      height: resize.height + (growsTop ? -dy : growsBottom ? dy : 0),
+      edge: resize.edge,
+    }
+    if (!resize.raf) resize.raf = requestAnimationFrame(flushResize)
+  }
+
+  function endResize() {
+    if (!resize.active) return
+    resize.active = false
+    if (resize.raf) cancelAnimationFrame(resize.raf)
+    resize.raf = 0
+    resize.pending = null
+    document.body.classList.remove('resizing')
+    document.body.style.cursor = ''
+    window.removeEventListener('pointermove', onResizeMove)
+    window.removeEventListener('pointerup', endResize)
+    window.removeEventListener('pointercancel', endResize)
+  }
+
+  function startResize(edge, event) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    resize.active = true
+    resize.edge = edge
+    resize.startX = event.screenX
+    resize.startY = event.screenY
+    resize.width = window.innerWidth
+    resize.height = window.innerHeight
+    document.body.classList.add('resizing')
+    // body.resizing 里所有元素都 inherit 光标，拖到卡片上也还是双箭头
+    document.body.style.cursor = EDGE_CURSOR[edge] || 'nwse-resize'
+    try {
+      event.target.setPointerCapture(event.pointerId)
+    } catch (err) {
+      /* 拿不到指针捕获也能靠 window 上的监听收尾 */
+    }
+    window.addEventListener('pointermove', onResizeMove)
+    window.addEventListener('pointerup', endResize)
+    window.addEventListener('pointercancel', endResize)
+  }
+
+  function bindResizeGrips() {
+    document.querySelectorAll('.grip').forEach((grip) => {
+      const edge = grip.dataset.edge || 'se'
+      grip.addEventListener('pointerdown', (event) => startResize(edge, event))
+    })
+    // 尺寸变了要重新量一遍：输入框高度、消息区贴底、电平画布都按新宽度算
+    window.addEventListener('resize', () => {
+      autoGrow()
+      syncSendButton()
+      syncScrolled()
+    })
+  }
+
   /* ---------------- 10. 启动 ---------------- */
 
   function bindSubscriptions() {
@@ -677,6 +778,7 @@
   async function boot() {
     buildDivider()
     bindSubscriptions()
+    bindResizeGrips()
     autoGrow()
     syncSendButton()
     renderState()
