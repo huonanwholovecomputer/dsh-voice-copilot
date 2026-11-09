@@ -125,13 +125,15 @@ export function stopFloatingWindow(options = {}) {
 /**
  * 拉起浮窗（Electron 优先，Python 回退）。
  * 返回 { started, engine, reason, pid?, exe? }，永不抛异常。
- * options: { appDir, desktopDir, electron, pythonw, dataDir, log }
+ * options: { appDir, desktopDir, electron, pythonw, dataDir, show, log }
+ *   show: true 时把窗口直接显示出来（用户手动「叫出小印」用）；默认 false = 托盘常驻不弹窗。
  */
 export function startFloatingWindow(options = {}) {
   if (process.platform !== 'win32') return { started: false, reason: 'not-windows' }
 
   const dataDir = options.dataDir || defaultDataDir()
   const pidFile = path.join(dataDir, 'app.pid')
+  const show = options.show === true
   const runningPid = readPid(pidFile)
   if (isProcessAlive(runningPid)) return { started: false, engine: 'unknown', reason: 'already-running', pid: runningPid }
 
@@ -139,7 +141,7 @@ export function startFloatingWindow(options = {}) {
   const electron = findElectron(options.electron)
 
   if (electron && fs.existsSync(path.join(desktopDir, 'main.js'))) {
-    return spawnHelper(electron, [desktopDir], desktopDir, { engine: 'electron', dataDir, pidFile, log: options.log })
+    return spawnHelper(electron, [desktopDir], desktopDir, { engine: 'electron', dataDir, pidFile, show, log: options.log })
   }
 
   const appDir = options.appDir || APP_DIR
@@ -149,16 +151,18 @@ export function startFloatingWindow(options = {}) {
   }
   const pythonw = findPythonw(options.pythonw)
   if (!pythonw) return { started: false, engine: 'none', reason: 'no-pythonw' }
-  return spawnHelper(pythonw, [mainPy], appDir, { engine: 'python', dataDir, pidFile, log: options.log })
+  return spawnHelper(pythonw, [mainPy], appDir, { engine: 'python', dataDir, pidFile, show, log: options.log })
 }
 
-function spawnHelper(exe, args, cwd, { engine, dataDir, pidFile, log }) {
+function spawnHelper(exe, args, cwd, { engine, dataDir, pidFile, show, log }) {
   // 本机 shell 环境里带着 ELECTRON_RUN_AS_NODE=1（某些工具链留下的），
   // 不删掉的话 electron.exe 会退化成 node，直接报 Cannot find module 'electron'。
   const env = { ...process.env, PYTHONUTF8: '1' }
   delete env.ELECTRON_RUN_AS_NODE
   // 让浮窗用和 pid 文件同一个目录，免得两边各算各的
   env.XIAOYIN_DATA_DIR = dataDir
+  // 用户手动叫出来时直接显示窗口；自启动时不设，保持托盘常驻、不打扰
+  if (show) env.XIAOYIN_SHOW = '1'
 
   let child
   try {

@@ -28,6 +28,8 @@ window.__ModuleLoader__.load({
     const LEDGER_POLICY_ROUTE = '/__dsh-voice-copilot/ledger/policy' // ui-copy-ignore
     const LEDGER_POLICY_APPLY_ROUTE = '/__dsh-voice-copilot/ledger/policy/apply' // ui-copy-ignore
     const LEDGER_POLICY_UNDO_ROUTE = '/__dsh-voice-copilot/ledger/policy/undo' // ui-copy-ignore
+    // 「叫出小印」：POST 一下让宿主把浮窗显示出来（进程在跑发事件，没在跑现拉）。
+    const SUMMON_ROUTE = '/__dsh-voice-copilot/summon' // ui-copy-ignore
     // 侧栏入口 id 与 main 面板 key 必须是同一个值。
     const PANEL_ID = '@local/dsh-voice-copilot#groups' // ui-copy-ignore
     // 800ms 一次：用户按下按钮到画面切过去，感知上还是「立刻」。
@@ -298,6 +300,83 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 叫出小印：让宿主把语音浮窗显示到前台。
+     * 浮窗进程还在（托盘常驻）→ 宿主发一条 summon 事件，浮窗自己 show()；
+     * 进程已经退出了 → 宿主现拉一个并直接显示。两种都只回 { ok, mode }，不抛。
+     */
+    async function summonCopilot() {
+      try {
+        const res = await fetch(SUMMON_ROUTE, { method: 'POST', cache: 'no-store', credentials: 'same-origin' })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) return { ok: false, mode: 'failed', error: (data && data.error) || `HTTP ${res.status}` }
+        return {
+          ok: Boolean(data && data.ok),
+          mode: (data && data.mode) || 'unknown',
+          error: (data && data.error) || '',
+        }
+      } catch (error) {
+        return { ok: false, mode: 'failed', error: String(error && error.message ? error.message : error) }
+      }
+    }
+
+    function summonFailureText(result) {
+      const detail = result && result.error ? result.error : ''
+      return detail ? `没叫出来：${detail}` : '没叫出来：浮窗程序没能启动，看看插件日志'
+    }
+
+    /**
+     * 会话标题栏右侧的小按钮：只占一个图标位，点一下把小印叫出来。
+     * 标题栏是紧凑工具区，所以固定 28×28、透明底，悬停才出浅色背景。
+     */
+    function SummonUtilityButton() {
+      const [busy, setBusy] = react.useState(false)
+      const [hover, setHover] = react.useState(false)
+      const [note, setNote] = react.useState('')
+
+      react.useEffect(() => {
+        if (!note) return undefined
+        const timer = setTimeout(() => setNote(''), 3200)
+        return () => clearTimeout(timer)
+      }, [note])
+
+      const onClick = async () => {
+        if (busy) return
+        setBusy(true)
+        setNote('')
+        const result = await summonCopilot()
+        setBusy(false)
+        if (!result.ok) setNote(summonFailureText(result))
+        else if (result.mode === 'started') setNote('正在启动小印…')
+        else setNote('小印已经在屏幕上')
+      }
+
+      return h('button', {
+        type: 'button',
+        title: note || '叫出小印',
+        'aria-label': '叫出小印',
+        'data-voice-copilot': 'summon', // ui-copy-ignore
+        onClick: () => { void onClick() },
+        onMouseEnter: () => setHover(true),
+        onMouseLeave: () => setHover(false),
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '28px',
+          height: '28px',
+          padding: 0,
+          margin: 0,
+          border: 'none',
+          borderRadius: '8px',
+          background: hover && !busy ? 'color-mix(in srgb, currentColor 10%, transparent)' : 'transparent',
+          color: 'inherit',
+          opacity: busy ? 0.45 : 0.78,
+          cursor: busy ? 'default' : 'pointer',
+        },
+      }, h(CopilotPanelIcon, { size: 16 }))
+    }
+
+    /**
      * 「小印」管理页：群聊白名单。
      *
      * 勾选 = 纳入小印的查找范围（chats.excluded = 0），取消 = 排除（= 1）。
@@ -316,6 +395,20 @@ window.__ModuleLoader__.load({
       const [policyPin, setPolicyPin] = react.useState(true)
       const [policy, setPolicy] = react.useState({ status: 'idle', error: '', data: null, message: '' })
       const [snapAvailable, setSnapAvailable] = react.useState(false)
+      // 「叫出小印」：页面顶部也给一个入口，不必回会话去点标题栏图标。
+      const [summonBusy, setSummonBusy] = react.useState(false)
+      const [summonNote, setSummonNote] = react.useState('')
+
+      const summon = async () => {
+        if (summonBusy) return
+        setSummonBusy(true)
+        setSummonNote('')
+        const result = await summonCopilot()
+        setSummonBusy(false)
+        if (!result.ok) setSummonNote(summonFailureText(result))
+        else if (result.mode === 'started') setSummonNote('正在启动小印…')
+        else setSummonNote('小印已经在屏幕上')
+      }
 
       const load = async () => {
         setState((prev) => ({ ...prev, status: 'loading', error: '' }))
@@ -529,6 +622,13 @@ window.__ModuleLoader__.load({
           h('h2', { style: { margin: 0, fontSize: '1.4em', fontWeight: 650 } }, '小印 · 聊天白名单'),
           h('span', { style: chipStyle }, '只在这里找文件'),
           h('span', { style: { flex: 1 } }),
+          h('button', {
+            type: 'button',
+            style: { ...buttonStyle, fontWeight: 600 },
+            disabled: summonBusy,
+            onClick: () => { void summon() },
+          }, summonBusy ? '正在叫出…' : '叫出小印'),
+          summonNote ? h('span', { style: { fontSize: '0.82em', opacity: 0.7 } }, summonNote) : null,
           h('button', { style: buttonStyle, onClick: back }, '← 回到会话'),
         ),
         h('p', { style: { margin: '0 0 16px', opacity: 0.68, fontSize: '0.9em', lineHeight: 1.6, maxWidth: 800 } },
@@ -766,6 +866,26 @@ window.__ModuleLoader__.load({
             console.warn('[voice-copilot] 侧栏页没有注册成功:', error)
           }
           return disposeAll
+        })
+
+        // 会话标题栏右侧的「叫出小印」图标按钮：不占侧栏，开着会话就看得见。
+        // 单独一个 effect——这个位置在旧宿主里可能不存在，挂了不该连累侧栏页。
+        ctx.effect(() => {
+          try {
+            return ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register( // ui-copy-ignore
+              {
+                name: 'conversation.session.header.utilities', // ui-copy-ignore
+                id: 'voice-copilot-summon', // ui-copy-ignore
+                // 自带工具多在 -10～0，别的插件在 29/90；夹在中间，靠右但不抢最后一位。
+                order: 15,
+                label: () => '叫出小印',
+              },
+              SummonUtilityButton,
+            ))
+          } catch (error) {
+            console.warn('[voice-copilot] 标题栏按钮没有注册成功:', error)
+            return () => {}
+          }
         })
 
         /**

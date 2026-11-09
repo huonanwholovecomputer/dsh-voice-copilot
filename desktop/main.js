@@ -331,6 +331,11 @@ function handleEvent(event) {
     case 'transcript':
       // 自己发出去的文本不用再画一遍
       return
+    case 'summon':
+      // 用户在 DSH 里点了「叫出小印」：把窗口叫到前台（已在显示也重新聚焦）
+      log('收到 summon，显示浮窗')
+      showWindow()
+      return
     case 'prompt':
       if (event.accepted === false) {
         setPhase('error', { error: 'DSH 没有接住这条消息' })
@@ -435,6 +440,8 @@ function wireVoiceLoop(voiceLoop) {
 function showWindow() {
   if (!windowRef) return
   windowRef.show()
+  // 从 DSH 点按钮叫出来时，窗口常常在别的窗口后面：显式提到前台
+  if (typeof windowRef.focus === 'function') windowRef.focus()
   pushState({ hint: hintText(), name: config.name, hotkey: state.hotkey })
   pushMessages()
 }

@@ -25,7 +25,7 @@ import path from 'node:path'
 
 import z from '@deepseek-ai/schemastery'
 
-import { startFloatingWindow, stopFloatingWindow } from './autostart.js'
+import { startFloatingWindow, stopFloatingWindow, isProcessAlive, readPid } from './autostart.js'
 import { createLedgerApi } from './ledger-groups.js'
 import { createLearning } from './learning.js'
 import { createPinyinTool } from './pinyin-match.js'
@@ -86,6 +86,8 @@ const LEDGER_EXCLUDE_ROUTE = '/__dsh-voice-copilot/ledger/exclude'
 const LEDGER_POLICY_ROUTE = '/__dsh-voice-copilot/ledger/policy'
 const LEDGER_POLICY_APPLY_ROUTE = '/__dsh-voice-copilot/ledger/policy/apply'
 const LEDGER_POLICY_UNDO_ROUTE = '/__dsh-voice-copilot/ledger/policy/undo'
+// 「叫出小印」按钮：POST 一下就显示浮窗（进程在跑发事件，没在跑现拉）。
+const SUMMON_ROUTE = '/__dsh-voice-copilot/summon'
 // 超过这个时间没人来取就作废：浮窗早就收起了，用户也不会希望下次打开 DSH 时突然被切会话。
 const OPEN_TTL_MS = 30_000
 // 不指定 cwd 时会话会落在 Host 进程的工作目录（profile 目录），DSH 侧栏里看不见。
@@ -917,6 +919,51 @@ export function apply(ctx, config = {}) {
       path: LEDGER_POLICY_UNDO_ROUTE,
       handler: (req, res) => { void ledgerApi.policyUndo(req, res) },
     }), 'dsh-voice-copilot: ledger policy undo route')
+
+    // 「叫出小印」：浮窗已经在跑就发一条 summon 事件让它自己 show()；
+    // 没在跑（用户手动退出过）就现拉一个并直接显示窗口。
+    webCtx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: SUMMON_ROUTE,
+      handler: (req, res) => {
+        const send = (status, body) => {
+          try {
+            res.writeHead(status, {
+              'content-type': 'application/json; charset=utf-8',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify(body))
+          } catch { /* 页面已经断开，无所谓 */ }
+        }
+        if ((req.method || 'GET') !== 'POST') { send(405, { ok: false, error: '请用 POST' }); return }
+        try {
+          const pid = readPid(path.join(dataDir, 'app.pid'))
+          if (isProcessAlive(pid)) {
+            emit({ type: 'summon' })
+            log(`summon: 浮窗已在跑 pid=${pid}，发事件叫它显示`)
+            send(200, { ok: true, mode: 'shown', pid })
+            return
+          }
+          const result = startFloatingWindow({
+            appDir: config.appDir,
+            pythonw: config.pythonw,
+            dataDir,
+            show: true,
+            log,
+          })
+          log(`summon: 浮窗没在跑，重新拉起 ${JSON.stringify(result)}`)
+          send(200, {
+            ok: Boolean(result && result.started),
+            mode: result && result.started ? 'started' : 'failed',
+            detail: result,
+          })
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error)
+          log(`summon failed: ${message}`)
+          send(500, { ok: false, error: message })
+        }
+      },
+    }), 'dsh-voice-copilot: summon route')
   })
 
   // 先把运行时快照落盘，再拉起浮窗，避免浮窗先启动读到旧配置
