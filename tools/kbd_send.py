@@ -428,32 +428,20 @@ def _ensure_wechat_front(*, tries: int = 3, wait: float = 1.3) -> tuple[bool, st
     return False, f"按了 {tries} 次 Ctrl+Alt+W 微信仍不在前台（当前：{info}）"
 
 
-def send_text(to: str, text: str, *, dry_run: bool = False,
-              shot: bool = True) -> dict:
-    """按店主的快捷键流程发一条文字。
+def _open_chat_core(to: str, mark, result: dict) -> bool:
+    """0–3 步：唤前台 → Ctrl+F → 清空 → 打全名 → Enter → 左侧画面差分确认。
 
-    步骤：Ctrl+Alt+W → Ctrl+F → 打全名 → Enter → Ctrl+V → Enter
-    每一步（可选）截图，返回所有截图路径供人工核对。
+    只「打开会话」，不粘贴、不发送。send_text 与 open_chat 共用这一段，
+    保证「打开会话」的判据只有一处（2026-11-06 实测：画面差分是唯一可信的）。
+    失败时把 state/reason 写进 ``result`` 并返回 False。
     """
-    steps: list[dict] = []
-
-    def mark(name: str, extra: dict | None = None) -> None:
-        row = {"step": name, "at": datetime.now().strftime("%H:%M:%S")}
-        if shot:
-            row["shot"] = grab(name)
-        if extra:
-            row.update(extra)
-        steps.append(row)
-
-    result: dict = {"to": to, "text": text, "steps": steps}
-
     # 0. 唤起微信：只按店主自己的 Ctrl+Alt+W，并**验证前台确实是微信进程**
     front_ok, front_info = _ensure_wechat_front()
     mark("0-ensure-front", {"ok": front_ok, "detail": front_info})
     if not front_ok:
         result.update(state="failed",
                       reason=f"微信没能到前台，后续按键会被别的窗口接走：{front_info}")
-        return result
+        return False
 
     # 1. Ctrl+F 打开搜索（打开后先清空残留：微信会记住上次搜过的词）
     chord(VK_CONTROL, VK_F)
@@ -470,7 +458,7 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
     mark("2-typed-name", {"typed": f"{typed}/{total}"})
     if typed != total:
         result.update(state="failed", reason=f"名字只打进 {typed}/{total} 个字符")
-        return result
+        return False
 
     # 3. 回车，打开第一个候选 —— 必须确认搜索面板真的关了才继续，
     #    否则下一段 Ctrl+V 会把正文粘进搜索框（2026-11-06 踩过）。
@@ -496,6 +484,31 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
             state="failed",
             reason="回车后搜索面板没有关闭（左侧画面几乎没变），会话可能没打开 —— 没有继续粘贴，避免把正文粘进搜索框",
         )
+        return False
+
+    return True
+
+
+def send_text(to: str, text: str, *, dry_run: bool = False,
+              shot: bool = True) -> dict:
+    """按店主的快捷键流程发一条文字。
+
+    步骤：Ctrl+Alt+W → Ctrl+F → 打全名 → Enter → Ctrl+V → Enter
+    每一步（可选）截图，返回所有截图路径供人工核对。
+    """
+    steps: list[dict] = []
+
+    def mark(name: str, extra: dict | None = None) -> None:
+        row = {"step": name, "at": datetime.now().strftime("%H:%M:%S")}
+        if shot:
+            row["shot"] = grab(name)
+        if extra:
+            row.update(extra)
+        steps.append(row)
+
+    result: dict = {"to": to, "text": text, "steps": steps}
+
+    if not _open_chat_core(to, mark, result):
         return result
 
     # 4. 写剪贴板 + Ctrl+V
@@ -517,10 +530,44 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
     time.sleep(1.0)
     mark("5-enter-sent")
 
-    # 6. 数据库确认（三态：sent / maybe / failed）
-    confirmed = find_sent(_resolve_username(to), text, before)
+    # 6. 发送后核对（2026-11-10 店主原话：「不用数据库读这个步骤」）
+    #    按键链路走完就算发出：数据库只做一次很短的顺手核对，
+    #    读不到也不改判定，不再返回 maybe 让店主盯着窗口等落库。
+    confirmed = find_sent(_resolve_username(to), text, before, timeout=3.0)
     mark("6-confirmed", confirmed)
-    result.update(confirmed)
+    result.update(
+        state="sent",
+        db_confirmed=confirmed.get("state") == "sent",
+        confirm_detail=confirmed,
+    )
+    return result
+
+
+def open_chat(to: str, *, shot: bool = True) -> dict:
+    """把微信切到 ``to`` 的会话，只打开、不发任何东西。
+
+    店主 2026-11-11 的用法：「帮我将微信聊天框转到某某的对话框」。
+    复用 send_text 的前四步（唤前台 → Ctrl+F → 打全名 → Enter → 画面差分确认），
+    确认会话真的打开就停；不写剪贴板、不按发送。
+    """
+    steps: list[dict] = []
+
+    def mark(name: str, extra: dict | None = None) -> None:
+        row = {"step": name, "at": datetime.now().strftime("%H:%M:%S")}
+        if shot:
+            row["shot"] = grab(name)
+        if extra:
+            row.update(extra)
+        steps.append(row)
+
+    result: dict = {"to": to, "steps": steps, "mode": "kbd-open-chat"}
+    if not _open_chat_core(to, mark, result):
+        return result
+
+    result.update(
+        state="opened",
+        hint=f"微信已切到「{to}」的会话（左侧画面已变化、搜索面板已关闭）。没有发任何消息。",
+    )
     return result
 
 
@@ -614,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="粘贴完就停，不按发送")
     ap.add_argument("--no-shot", action="store_true", help="不截图")
     ap.add_argument("--preflight", action="store_true", help="只检查能不能发，不发送")
+    ap.add_argument("--open-chat", action="store_true", help="只打开会话，不发消息（配 --to）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -624,8 +672,17 @@ def main(argv: list[str] | None = None) -> int:
               + (f"\n原因：{out['reason']}" if out["reason"] else ""))
         return 0 if out["ok"] else 1
 
+    if args.open_chat:
+        if not args.to:
+            ap.error("--open-chat 需要 --to")
+        out = open_chat(args.to, shot=not args.no_shot)
+        print(json.dumps(out, ensure_ascii=False, indent=2) if args.json else
+              f"状态：{'已打开会话' if out.get('state') == 'opened' else '没打开'}"
+              + (f"\n说明：{out['reason']}" if out.get("reason") else ""))
+        return 0 if out.get("state") == "opened" else 1
+
     if not args.to or not args.text:
-        ap.error("--to 与 --text 必填（除非用 --preflight）")
+        ap.error("--to 与 --text 必填（除非用 --preflight / --open-chat）")
 
     out = send_text(args.to, args.text, dry_run=args.dry_run, shot=not args.no_shot)
 
