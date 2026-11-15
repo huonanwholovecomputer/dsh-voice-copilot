@@ -73,6 +73,29 @@ window.__ModuleLoader__.load({
       font: 'inherit',
     }
 
+    // <select> 自己的样式管不到展开后的那一层：那是 Chromium 的原生弹层，选项继承了
+    // select 的 color，深色主题下就是「白底白字」，只看得见被高亮的那一条。选项得自己
+    // 钉颜色，但钉死一种反而会在另一种主题下瞎（浅色主题会变成黑底黑字），所以按页面
+    // 实际底色判一次：亮底色用深字，暗底色用浅字。
+    const popupTheme = () => {
+      const dark = { scheme: 'dark', option: { color: '#f2f3f5', background: '#20232a' } }
+      const light = { scheme: 'light', option: { color: '#1f2328', background: '#ffffff' } }
+      try {
+        const luminance = (value) => {
+          const match = /rgba?\(([^)]+)\)/.exec(String(value || ''))
+          if (!match) return null
+          const [r, g, b, a = 1] = match[1].split(/[,/\s]+/).filter(Boolean).map(Number)
+          if (![r, g, b].every(Number.isFinite) || !(a >= 0.2)) return null
+          return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        }
+        const body = luminance(getComputedStyle(document.body).backgroundColor)
+        const level = body === null ? luminance(getComputedStyle(document.documentElement).backgroundColor) : body
+        return level !== null && level > 0.5 ? light : dark
+      } catch {
+        return dark
+      }
+    }
+
     function SettingsPage(props) {
       const form = props ? props.form : undefined
       const [draft, setDraft] = react.useState(() => readDraft(form && form.state.value))
@@ -393,6 +416,7 @@ window.__ModuleLoader__.load({
       const [policyMode, setPolicyMode] = react.useState('hybrid')
       const [policyDays, setPolicyDays] = react.useState('10')
       const [policyPin, setPolicyPin] = react.useState(true)
+      const popup = popupTheme()
       const [policy, setPolicy] = react.useState({ status: 'idle', error: '', data: null, message: '' })
       const [snapAvailable, setSnapAvailable] = react.useState(false)
       // 「叫出小印」：页面顶部也给一个入口，不必回会话去点标题栏图标。
@@ -663,11 +687,11 @@ window.__ModuleLoader__.load({
                   h('select', {
                     value: policyMode,
                     onChange: (event) => setPolicyMode(event.target.value),
-                    style: { ...inputStyle, width: 'auto', padding: '4px 8px' },
+                    style: { ...inputStyle, width: 'auto', padding: '4px 8px', colorScheme: popup.scheme },
                   },
-                    h('option', { value: 'hybrid' }, '混合（私聊按文件，群按订单）'),
-                    h('option', { value: 'orders' }, '只按订单来源'),
-                    h('option', { value: 'files' }, '按台账文件'),
+                    h('option', { value: 'hybrid', style: popup.option }, '混合（私聊按文件，群按订单）'),
+                    h('option', { value: 'orders', style: popup.option }, '只按订单来源'),
+                    h('option', { value: 'files', style: popup.option }, '按台账文件'),
                   ),
                 ),
                 h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '0.9em' } },
