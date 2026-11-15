@@ -634,7 +634,15 @@ window.__ModuleLoader__.load({
         ),
       )
 
-      const renderSection = ({ title, hint, items, total, includedCount, emptyHint }) => h('div', { style: { marginBottom: '24px' } },
+      const renderSection = ({ title, hint, items, total, includedCount, emptyHint, card = false }) => h('div', {
+        style: card
+          ? {
+            display: 'flex', flexDirection: 'column', minWidth: 0,
+            border: '1px solid color-mix(in srgb, currentColor 14%, transparent)',
+            borderRadius: '10px', padding: '12px 12px 4px',
+          }
+          : { marginBottom: '24px' },
+      },
         h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' } },
           h('h3', { style: { margin: 0, fontSize: '1.02em', fontWeight: 650 } }, title),
           h('span', { style: { opacity: 0.6, fontSize: '0.82em' } }, `纳入 ${includedCount}/${total}，显示 ${items.length}`),
@@ -830,7 +838,14 @@ window.__ModuleLoader__.load({
           : null,
         state.status === 'loading' && state.chats.length === 0
           ? h('div', { style: { opacity: 0.6, padding: '20px 0' } }, '正在读台账…')
-          : h('div', null,
+          : h('div', {
+            style: {
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
+              gap: '16px',
+              alignItems: 'start',
+            },
+          },
             renderSection({
               title: '个人聊天',
               hint: '按人找文件：勾选后小印能在这位好友的聊天里找',
@@ -838,6 +853,7 @@ window.__ModuleLoader__.load({
               total: counts.directs,
               includedCount: counts.directsIncluded,
               emptyHint: needle || onlyExcluded ? '没有匹配的个人聊天。' : '台账里还没有个人聊天记录。',
+              card: true,
             }),
             renderSection({
               title: '群聊',
@@ -846,6 +862,7 @@ window.__ModuleLoader__.load({
               total: counts.groups,
               includedCount: counts.included,
               emptyHint: needle || onlyExcluded ? '没有匹配的群。' : '台账里还没有群。先让台账刷新一次索引。',
+              card: true,
             }),
           ),
         h('div', { style: { marginTop: '18px', opacity: 0.5, fontSize: '0.78em', lineHeight: 1.7 } },
