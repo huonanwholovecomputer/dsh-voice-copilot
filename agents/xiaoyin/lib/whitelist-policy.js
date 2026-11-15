@@ -7,7 +7,7 @@
  *   1. 从打印机日志里重建「最近的订单」——每个打印批次包含哪些文件、在什么时间；
  *   2. 把这些文件名和台账 file_msgs 对齐（精确 → 归一 → 去加工后缀），判断文件是谁发的；
  *   3. 按会话汇总：这个群/这个人最近供过几份要打印的文件；
- *   4. 按策略给出 excluded / pinned 的目标值。
+ *   4. 按策略给出 excluded 的目标值。
  *
  * 三种口径：
  *   - hybrid（默认）：群只留「最近供过订单文件」的群；私聊留「台账里有文件」的私聊。
@@ -19,8 +19,8 @@
  * 不碰的：云端 H5 上传（没有微信会话）、微信图片（台账不收）、店主自己加工后
  * 回传的文件（is_sent=1），它们不计入任何会话的「供单」。
  *
- * 只改 chats.excluded / chats.pinned，不删记录、不重刷索引。台账刷新时
- * excluded/pinned 不会被覆盖（bridge/ledger.py 的 upsert 不碰这两列），
+ * 只改 chats.excluded，不删记录、不重刷索引。台账刷新时
+ * excluded 不会被覆盖（bridge/ledger.py 的 upsert 不碰这一列），
  * 被排除的会话在刷新时直接跳过（skipped_excluded）。
  */
 
@@ -270,8 +270,8 @@ export function attributeOrders({ batches, cloudTasks }, messages, sinceMs) {
 }
 
 /**
- * 读台账 chats 表（带文件数），不动 excluded/pinned 以外的任何列。
- * @returns {Promise<Array<{username,name,isGroup,excluded,pinned,files,lastSeenTs}>>}
+ * 读台账 chats 表（带文件数），不动 excluded 以外的任何列。
+ * @returns {Promise<Array<{username,name,isGroup,excluded,files,lastSeenTs}>>}
  */
 export async function loadChats(dbPath) {
   const { DatabaseSync } = await import('node:sqlite')
@@ -280,7 +280,7 @@ export async function loadChats(dbPath) {
   try {
     db.exec('PRAGMA busy_timeout = 3000')
     return db.prepare(`
-      SELECT c.username, c.name, c.is_group, c.excluded, c.pinned,
+      SELECT c.username, c.name, c.is_group, c.excluded,
              (SELECT COUNT(*) FROM file_msgs f WHERE f.chat_username = c.username) AS files
       FROM chats c
       ORDER BY c.is_group DESC, c.name ASC
@@ -289,8 +289,7 @@ export async function loadChats(dbPath) {
       name: String(row.name || row.username || ''),
       isGroup: Boolean(Number(row.is_group)),
       excluded: Boolean(Number(row.excluded)),
-      pinned: Boolean(Number(row.pinned)),
-      files: Number(row.files) || 0,
+        files: Number(row.files) || 0,
     }))
   } finally {
     try { db.close() } catch { /* ignore */ }
@@ -306,10 +305,9 @@ const ALWAYS_KEEP = new Set(['文件传输助手'])
  * @param {Map} input.orderFiles  attributeOrders().orderFiles
  * @param {string} input.mode  hybrid | orders | files
  * @param {number} input.days  窗口天数
- * @param {boolean} input.pinOrderChats  是否把供单群置顶
  * @param {number} input.now  ms
  */
-export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, pinOrderChats = true, now = Date.now() }) {
+export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, now = Date.now() }) {
   if (!MODES.includes(mode)) throw new Error(`未知策略：${mode}（可选 ${MODES.join(' / ')}）`)
   const windowDays = Math.min(Math.max(Number(days) || 10, 1), 120)
   const items = []
@@ -338,8 +336,7 @@ export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, pinOr
     if (ALWAYS_KEEP.has(chat.name) && chat.files > 0) keep = true
 
     const proposedExcluded = !keep
-    const proposedPinned = keep && orderCount > 0 && (chat.isGroup ? pinOrderChats : false)
-    const isChanged = proposedExcluded !== chat.excluded || proposedPinned !== chat.pinned
+    const isChanged = proposedExcluded !== chat.excluded
     if (isChanged) changed += 1
 
     items.push({
@@ -350,9 +347,7 @@ export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, pinOr
       orderFiles: orderCount,
       lastOrderAt: order.lastAt || 0,
       excluded: chat.excluded,
-      pinned: chat.pinned,
       proposedExcluded,
-      proposedPinned,
       changed: isChanged,
       reason,
       action: proposedExcluded ? 'exclude' : 'keep',
@@ -378,7 +373,6 @@ export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, pinOr
   return {
     mode,
     days: windowDays,
-    pinOrderChats: Boolean(pinOrderChats),
     generatedAt: new Date(now).toISOString(),
     since: new Date(now - windowDays * 86400000).toISOString(),
     totals,
@@ -387,14 +381,14 @@ export function buildPlan({ chats, orderFiles, mode = 'hybrid', days = 10, pinOr
   }
 }
 
-/** 写库前备份当前 excluded/pinned，供撤销。 */
+/** 写库前备份当前 excluded，供撤销。 */
 export function saveSnapshot(dataDir, chats) {
   const dir = path.resolve(dataDir || path.join(os.homedir(), '.dsh', 'voice-copilot'))
   fs.mkdirSync(dir, { recursive: true })
   const target = path.join(dir, 'whitelist-snapshot.json')
   const payload = {
     savedAt: new Date().toISOString(),
-    chats: Object.fromEntries(chats.map((chat) => [chat.username, { excluded: chat.excluded, pinned: chat.pinned, name: chat.name }])),
+    chats: Object.fromEntries(chats.map((chat) => [chat.username, { excluded: chat.excluded, name: chat.name }])),
   }
   fs.writeFileSync(target, JSON.stringify(payload, null, 2), 'utf8')
   return target
@@ -409,7 +403,7 @@ export function hasSnapshot(dataDir) {
 }
 
 /**
- * 批量写 chats.excluded / chats.pinned。只写有变化的行。
+ * 批量写 chats.excluded。只写有变化的行。
  * @returns {Promise<{changed:number}>}
  */
 export async function applyPlan(dbPath, plan) {
@@ -417,14 +411,14 @@ export async function applyPlan(dbPath, plan) {
   const db = new DatabaseSync(dbPath)
   try {
     db.exec('PRAGMA busy_timeout = 3000')
-    const update = db.prepare('UPDATE chats SET excluded = ?, pinned = ?, updated_at = ? WHERE username = ?')
+    const update = db.prepare('UPDATE chats SET excluded = ?, updated_at = ? WHERE username = ?')
     const now = Math.floor(Date.now() / 1000)
     let changed = 0
     db.exec('BEGIN')
     try {
       for (const item of plan.items) {
         if (!item.changed) continue
-        const result = update.run(item.proposedExcluded ? 1 : 0, item.proposedPinned ? 1 : 0, now, item.username)
+        const result = update.run(item.proposedExcluded ? 1 : 0, now, item.username)
         changed += Number(result.changes) || 0
       }
       db.exec('COMMIT')
@@ -438,7 +432,7 @@ export async function applyPlan(dbPath, plan) {
   }
 }
 
-/** 从快照恢复 excluded/pinned，返回恢复的行数。 */
+/** 从快照恢复 excluded，返回恢复的行数。 */
 export async function undoSnapshot(dbPath, dataDir) {
   const dir = path.resolve(dataDir || path.join(os.homedir(), '.dsh', 'voice-copilot'))
   const target = path.join(dir, 'whitelist-snapshot.json')
@@ -449,14 +443,14 @@ export async function undoSnapshot(dbPath, dataDir) {
   const db = new DatabaseSync(dbPath)
   try {
     db.exec('PRAGMA busy_timeout = 3000')
-    const update = db.prepare('UPDATE chats SET excluded = ?, pinned = ?, updated_at = ? WHERE username = ?')
+    const update = db.prepare('UPDATE chats SET excluded = ?, updated_at = ? WHERE username = ?')
     const now = Math.floor(Date.now() / 1000)
     let changed = 0
     db.exec('BEGIN')
     try {
       for (const [username, state] of Object.entries(chats)) {
         if (!state) continue
-        const result = update.run(state.excluded ? 1 : 0, state.pinned ? 1 : 0, now, username)
+        const result = update.run(state.excluded ? 1 : 0, now, username)
         changed += Number(result.changes) || 0
       }
       db.exec('COMMIT')
@@ -473,15 +467,15 @@ export async function undoSnapshot(dbPath, dataDir) {
 
 /**
  * 一站式：扫日志 + 读台账 + 归因 + 出方案。页面预览和 CLI 都走这里。
- * @param {{ dbPath:string, logDir?:string, days?:number, mode?:string, pinOrderChats?:boolean, now?:number }} options
+ * @param {{ dbPath:string, logDir?:string, days?:number, mode?:string, now?:number }} options
  */
-export async function analyze({ dbPath, logDir, days = 10, mode = 'hybrid', pinOrderChats = true, now = Date.now() }) {
+export async function analyze({ dbPath, logDir, days = 10, mode = 'hybrid', now = Date.now() }) {
   const windowDays = Math.min(Math.max(Number(days) || 10, 1), 120)
   const sinceMs = now - windowDays * 86400000
   const { batches, cloudTasks } = parseLogs(logDir || defaultLogDir())
   const messages = await loadMessages(dbPath)
   const { orderFiles, guessFiles, totals: attrTotals } = attributeOrders({ batches, cloudTasks }, messages, sinceMs)
   const chats = await loadChats(dbPath)
-  const plan = buildPlan({ chats, orderFiles, mode, days: windowDays, pinOrderChats, now })
+  const plan = buildPlan({ chats, orderFiles, mode, days: windowDays, now })
   return { plan, attrTotals: { ...attrTotals, guessChats: guessFiles.size }, orderFiles, chats }
 }

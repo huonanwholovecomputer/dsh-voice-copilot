@@ -26,7 +26,7 @@ import {
   hasSnapshot,
   saveSnapshot,
   undoSnapshot,
-} from '../whitelist-policy.js'
+} from '../agents/xiaoyin/lib/whitelist-policy.js'
 
 function usage() {
   return [
@@ -34,11 +34,10 @@ function usage() {
     '',
     '  --days N          订单窗口天数，默认 10（1–120）',
     `  --mode M          口径：${MODES.join(' / ')}，默认 hybrid`,
-    '  --no-pin          不置顶供单群',
     '  --ledger PATH     台账 ledger.db 路径（默认环境变量 DSH_VOICE_COPILOT_LEDGER_DB）',
     '  --log-dir PATH    打印机日志目录（默认 %APPDATA%\\HN打印工具\\logs）',
     '  --data-dir PATH   策略备份目录（默认 ~/.dsh/voice-copilot）',
-    '  --apply           应用方案（写 chats.excluded / chats.pinned）',
+    '  --apply           应用方案（写 chats.excluded）',
     '  --undo            撤销上一次应用的方案',
     '  --json            输出方案 JSON（不打印表格）',
     '  -h, --help        显示本帮助',
@@ -49,7 +48,6 @@ function parseArgs(argv) {
   const out = {
     days: 10,
     mode: 'hybrid',
-    pin: true,
     ledger: process.env.DSH_VOICE_COPILOT_LEDGER_DB || '',
     logDir: process.env.DSH_VOICE_COPILOT_PRINTER_LOG_DIR || defaultLogDir(),
     dataDir: path.join(os.homedir(), '.dsh', 'voice-copilot'),
@@ -68,7 +66,6 @@ function parseArgs(argv) {
     switch (arg) {
       case '--days': out.days = Number(next()); break
       case '--mode': out.mode = next(); break
-      case '--no-pin': out.pin = false; break
       case '--ledger': out.ledger = next(); break
       case '--log-dir': out.logDir = next(); break
       case '--data-dir': out.dataDir = next(); break
@@ -89,7 +86,7 @@ function fmtPct(part, total) {
 function printPlan(plan, attr) {
   const t = plan.totals
   console.log('')
-  console.log(`窗口   近 ${plan.days} 天（${new Date(plan.since).toLocaleString()} 起） · 口径 ${plan.mode}${plan.pinOrderChats ? ' · 置顶供单群' : ''}`)
+  console.log(`窗口   近 ${plan.days} 天（${new Date(plan.since).toLocaleString()} 起） · 口径 ${plan.mode}`)
   console.log(`扫描   打印批次 ${attr.batches || 0}，文件 ${attr.files || 0} 次；其中云端 ${attr.cloud || 0}、私聊 ${attr.private || 0}、群聊 ${attr.group || 0}、店主回传 ${attr.self || 0}、图片 ${attr.image || 0}、未归因 ${attr.unknown || 0}`)
   console.log(`结果   群 ${t.groupsIncluded}/${t.groups} 纳入，私聊 ${t.directsIncluded}/${t.directs} 纳入`)
   console.log(`文件   可见 ${t.visibleFiles}/${t.files}（${fmtPct(t.visibleFiles, t.files)}）`)
@@ -149,7 +146,6 @@ async function main() {
       logDir: options.logDir,
       days: options.days,
       mode: options.mode,
-      pinOrderChats: options.pin,
     })
   } catch (error) {
     console.error(`分析失败：${error && error.message ? error.message : error}`)

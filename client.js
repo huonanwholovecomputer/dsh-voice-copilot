@@ -415,7 +415,6 @@ window.__ModuleLoader__.load({
       const [policyOpen, setPolicyOpen] = react.useState(false)
       const [policyMode, setPolicyMode] = react.useState('hybrid')
       const [policyDays, setPolicyDays] = react.useState('10')
-      const [policyPin, setPolicyPin] = react.useState(true)
       const popup = popupTheme()
       const [policy, setPolicy] = react.useState({ status: 'idle', error: '', data: null, message: '' })
       const [snapAvailable, setSnapAvailable] = react.useState(false)
@@ -508,7 +507,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const policyQuery = () => `?days=${encodeURIComponent(policyDays)}&mode=${encodeURIComponent(policyMode)}&pin=${policyPin ? '1' : '0'}`
+      const policyQuery = () => `?days=${encodeURIComponent(policyDays)}&mode=${encodeURIComponent(policyMode)}`
 
       const previewPolicy = async () => {
         setPolicy({ status: 'loading', error: '', data: null, message: '' })
@@ -532,7 +531,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             cache: 'no-store',
             credentials: 'same-origin',
-            body: JSON.stringify({ days: Number(policyDays), mode: policyMode, pinOrderChats: policyPin }),
+            body: JSON.stringify({ days: Number(policyDays), mode: policyMode }),
           })
           const data = await res.json().catch(() => ({}))
           if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`)
@@ -617,7 +616,6 @@ window.__ModuleLoader__.load({
             chat.note ? h('span', { style: { ...chipStyle, fontSize: '0.74em' } }, chat.note) : null,
             h('span', { style: { opacity: 0.55, fontSize: '0.8em' } }, chat.files ? `${chat.files} 份文件` : '没有文件'),
             chat.excluded ? h('span', { style: { ...chipStyle, fontSize: '0.74em' } }, '已排除') : null,
-            chat.pinned ? h('span', { style: { ...chipStyle, fontSize: '0.74em' } }, '置顶') : null,
           ),
           chat.preview
             ? h('div', {
@@ -723,10 +721,6 @@ window.__ModuleLoader__.load({
                     style: { ...inputStyle, width: '76px', padding: '4px 8px' },
                   }),
                   '天',
-                ),
-                h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '0.9em', cursor: 'pointer' } },
-                  h('input', { type: 'checkbox', checked: policyPin, onChange: (event) => setPolicyPin(event.target.checked) }),
-                  '置顶供单群',
                 ),
                 h('span', { style: { flex: 1 } }),
                 h('button', {

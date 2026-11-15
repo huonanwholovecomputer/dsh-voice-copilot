@@ -20,11 +20,11 @@ function loadSqlite() {
 }
 
 const LIST_SQL = `
-  SELECT c.username, c.name, c.is_group, c.excluded, c.pinned, c.note,
+  SELECT c.username, c.name, c.is_group, c.excluded, c.note,
          c.last_preview, c.last_seen_ts,
          (SELECT COUNT(*) FROM file_msgs f WHERE f.chat_username = c.username) AS file_count
   FROM chats c
-  ORDER BY c.is_group DESC, c.excluded ASC, c.pinned DESC, c.last_seen_ts DESC, c.name ASC
+  ORDER BY c.is_group DESC, c.excluded ASC, c.last_seen_ts DESC, c.name ASC
 `
 
 const UPDATE_SQL = 'UPDATE chats SET excluded = ?, updated_at = ? WHERE username = ?'
@@ -39,7 +39,6 @@ function normalizeChat(row) {
     name: asText(row.name) || asText(row.username),
     isGroup: Boolean(row.is_group),
     excluded: Boolean(row.excluded),
-    pinned: Boolean(row.pinned),
     note: asText(row.note),
     preview: asText(row.last_preview).slice(0, 160),
     files: Number(row.file_count) || 0,
@@ -206,7 +205,7 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
     },
 
     /**
-     * GET /__dsh-voice-copilot/ledger/policy?days=10&mode=hybrid&pin=1
+     * GET /__dsh-voice-copilot/ledger/policy?days=10&mode=hybrid
      * 预览「一键策略」会怎么改：只读，不写库。
      */
     async policyPreview(req, res) {
@@ -233,7 +232,6 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
           logDir: configuredLogDir(),
           days: params.days,
           mode: params.mode,
-          pinOrderChats: params.pinOrderChats,
         })
         sendJson(res, 200, {
           db: path,
@@ -243,7 +241,6 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
           plan: {
             mode: result.plan.mode,
             days: result.plan.days,
-            pinOrderChats: result.plan.pinOrderChats,
             since: result.plan.since,
             generatedAt: result.plan.generatedAt,
             totals: result.plan.totals,
@@ -257,7 +254,7 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
     },
 
     /**
-     * POST /__dsh-voice-copilot/ledger/policy/apply  body: { days, mode, pinOrderChats }
+     * POST /__dsh-voice-copilot/ledger/policy/apply  body: { days, mode }
      * 先按当前数据重算一遍再写库，避免页面上的预览过期。
      */
     async policyApply(req, res) {
@@ -290,7 +287,6 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
           logDir: configuredLogDir(),
           days: params.days,
           mode: params.mode,
-          pinOrderChats: params.pinOrderChats,
         })
         const plan = result.plan
         if (!plan.changes.length) {
@@ -313,7 +309,7 @@ export function createLedgerApi({ dbPath, logDir, dataDir, log = () => {} }) {
       }
     },
 
-    /** POST /__dsh-voice-copilot/ledger/policy/undo：把上次应用策略前的 excluded/pinned 复原。 */
+    /** POST /__dsh-voice-copilot/ledger/policy/undo：把上次应用策略前的 excluded 复原。 */
     async policyUndo(req, res) {
       if ((req.method || 'POST') !== 'POST') {
         sendJson(res, 405, { error: '只支持 POST' })
@@ -341,7 +337,6 @@ function planSummary(plan) {
   return {
     mode: plan.mode,
     days: plan.days,
-    pinOrderChats: plan.pinOrderChats,
     since: plan.since,
     generatedAt: plan.generatedAt,
     totals: plan.totals,
@@ -355,7 +350,5 @@ function readPolicyParams(searchParams, body = {}) {
   const days = Number.isFinite(rawDays) && rawDays > 0 ? rawDays : 10
   const mode = asText(body.mode != null ? body.mode : searchParams.get('mode')).trim() || 'hybrid'
   if (!MODES.includes(mode)) throw new Error(`未知策略：${mode}（可选 ${MODES.join(' / ')}）`)
-  const rawPin = body.pinOrderChats != null ? body.pinOrderChats : searchParams.get('pin')
-  const pinOrderChats = rawPin == null || rawPin === '' ? true : !(rawPin === false || rawPin === '0' || rawPin === 'false')
-  return { days, mode, pinOrderChats }
+  return { days, mode }
 }
