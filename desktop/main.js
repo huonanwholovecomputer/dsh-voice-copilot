@@ -41,7 +41,12 @@ function resolveSherpa() {
   if (process.env.XIAOYIN_SHERPA) candidates.push(process.env.XIAOYIN_SHERPA)
   const fromEnv = process.env.DSH_DESKTOP_APP_ROOT
   if (fromEnv) candidates.push(path.join(fromEnv, 'app.asar.unpacked', 'node_modules', 'sherpa-onnx-node'))
+  // 拉起本窗口的那个 DSH 自己的 resources 目录（官方 44.x 和 DSH NEXT 的安装位置不一样）
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'sherpa-onnx-node'))
+  }
   candidates.push(
+    path.join(process.env.USERPROFILE || '', '.dsh', 'sherpa-onnx-node'),
     'C:/Program Files/DSH NEXT/resources/app.asar.unpacked/node_modules/sherpa-onnx-node',
     path.join(process.env.LOCALAPPDATA || '', 'Programs', 'DSH NEXT', 'resources', 'app.asar.unpacked', 'node_modules', 'sherpa-onnx-node'),
     path.join(DESKTOP_DIR, 'node_modules', 'sherpa-onnx-node'),
@@ -68,6 +73,24 @@ function isProcessAlive(pid) {
   } catch (error) {
     return Boolean(error && error.code === 'EPERM')
   }
+}
+
+/** 读宿主租约（插件根目录 lease.js 写的 lease.json）；读不懂就当没有。 */
+function readLeaseFile(file) {
+  try {
+    const lease = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!lease || typeof lease.instanceId !== 'string' || !lease.instanceId) return null
+    return lease
+  } catch {
+    return null
+  }
+}
+
+/** 心跳超过 20s 没续（= 4 个心跳周期）就当宿主已经没了；和插件侧 LEASE_TTL_MS 保持一致。 */
+const LEASE_STALE_MS = 20000
+function leaseHeartbeatFresh(lease, now = Date.now()) {
+  const beat = Number(lease && lease.heartbeat) || 0
+  return beat > 0 && now - beat < LEASE_STALE_MS
 }
 
 const messages = []
@@ -650,12 +673,30 @@ async function onReady() {
 
   app.on('will-quit', () => clearInterval(timer))
 
-  // 宿主看门狗：DSH 正常退出时插件会直接把本进程结束掉；这里兜住宿主崩溃/被强杀的情况，
-  // 免得留下一个对着没人应的浮窗。runtime.json 里没有 hostPid（老版本宿主）时不启用。
+  // 宿主看门狗。要防三件事：宿主崩溃/被强杀、DSH 正常退出（插件会直接杀本进程）、
+  // 以及同一个 DSH_HOME 被另一个 DSH 接管。判据优先用租约的 instanceId（谁拉起我、我归谁），
+  // pid 只在「宿主没写租约」的老版本上兜底。
+  let hostMisses = 0
   const hostTimer = setInterval(() => {
-    const pid = Number(config.hostPid) || 0
-    if (!pid || isProcessAlive(pid)) return
-    log(`宿主进程 ${pid} 已不在，浮窗跟着退出`)
+    const owner = config.ownerInstance
+    if (owner) {
+      const lease = readLeaseFile(config.leaseFile)
+      if (lease && lease.instanceId === owner) {
+        hostMisses = 0
+        if (leaseHeartbeatFresh(lease)) return
+        log(`租约心跳过期（${owner.slice(0, 8)}…），宿主多半已经没了，浮窗跟着退出`)
+      } else {
+        // 接管过程中 lease.json 会被短暂删掉/替换：给三个周期（6s）的宽限再判死。
+        hostMisses += 1
+        if (hostMisses < 3) return
+        const now = lease ? `${String(lease.instanceId).slice(0, 8)}…` : '无'
+        log(`小印已换宿主（我归 ${owner.slice(0, 8)}…，租约现在是 ${now}），浮窗退出`)
+      }
+    } else {
+      const pid = Number(config.hostPid) || 0
+      if (!pid || isProcessAlive(pid)) return
+      log(`宿主进程 ${pid} 已不在，浮窗跟着退出`)
+    }
     clearInterval(hostTimer)
     app.quit()
   }, 2000)

@@ -125,8 +125,9 @@ export function stopFloatingWindow(options = {}) {
 /**
  * 拉起浮窗（Electron 优先，Python 回退）。
  * 返回 { started, engine, reason, pid?, exe? }，永不抛异常。
- * options: { appDir, desktopDir, electron, pythonw, dataDir, show, log }
+ * options: { appDir, desktopDir, electron, pythonw, dataDir, show, log, ownerInstance, ownerProduct }
  *   show: true 时把窗口直接显示出来（用户手动「叫出小印」用）；默认 false = 托盘常驻不弹窗。
+ *   ownerInstance: 拉起它的宿主实例 id（写进 env 和 app.pid，浮窗据此判断「我归谁」）。
  */
 export function startFloatingWindow(options = {}) {
   if (process.platform !== 'win32') return { started: false, reason: 'not-windows' }
@@ -141,7 +142,10 @@ export function startFloatingWindow(options = {}) {
   const electron = findElectron(options.electron)
 
   if (electron && fs.existsSync(path.join(desktopDir, 'main.js'))) {
-    return spawnHelper(electron, [desktopDir], desktopDir, { engine: 'electron', dataDir, pidFile, show, log: options.log })
+    return spawnHelper(electron, [desktopDir], desktopDir, {
+      engine: 'electron', dataDir, pidFile, show, log: options.log,
+      ownerInstance: options.ownerInstance, ownerProduct: options.ownerProduct,
+    })
   }
 
   const appDir = options.appDir || APP_DIR
@@ -151,16 +155,42 @@ export function startFloatingWindow(options = {}) {
   }
   const pythonw = findPythonw(options.pythonw)
   if (!pythonw) return { started: false, engine: 'none', reason: 'no-pythonw' }
-  return spawnHelper(pythonw, [mainPy], appDir, { engine: 'python', dataDir, pidFile, show, log: options.log })
+  return spawnHelper(pythonw, [mainPy], appDir, {
+    engine: 'python', dataDir, pidFile, show, log: options.log,
+    ownerInstance: options.ownerInstance, ownerProduct: options.ownerProduct,
+  })
 }
 
-function spawnHelper(exe, args, cwd, { engine, dataDir, pidFile, show, log }) {
+/**
+ * 浮窗的语音引擎（sherpa-onnx-node）是原生模块，得有一份真二进制。
+ * 优先用「拉起浮窗的这个 DSH」自带的 node_modules：DSH NEXT 和官方 dsh 各自的
+ * 安装目录里都可能带一份，宿主是谁就用谁的，免得浮窗依赖另一个安装是否还在。
+ * 返回模块目录（含 sherpa-onnx.js）或空串。
+ */
+export function resolveHostSherpa(env = process.env) {
+  const roots = [env.DSH_DESKTOP_APP_ROOT, process.resourcesPath].filter(Boolean)
+  for (const root of roots) {
+    const dir = path.join(root, 'app.asar.unpacked', 'node_modules', 'sherpa-onnx-node')
+    if (fs.existsSync(path.join(dir, 'sherpa-onnx.js'))) return dir
+  }
+  const local = path.join(os.homedir(), '.dsh', 'sherpa-onnx-node')
+  if (fs.existsSync(path.join(local, 'sherpa-onnx.js'))) return local
+  return ''
+}
+
+function spawnHelper(exe, args, cwd, { engine, dataDir, pidFile, show, log, ownerInstance, ownerProduct }) {
   // 本机 shell 环境里带着 ELECTRON_RUN_AS_NODE=1（某些工具链留下的），
   // 不删掉的话 electron.exe 会退化成 node，直接报 Cannot find module 'electron'。
   const env = { ...process.env, PYTHONUTF8: '1' }
   delete env.ELECTRON_RUN_AS_NODE
   // 让浮窗用和 pid 文件同一个目录，免得两边各算各的
   env.XIAOYIN_DATA_DIR = dataDir
+  // 谁拉起的我：浮窗的宿主看门狗按 instanceId 认人（pid 会被复用，也可能被另一个宿主覆盖）
+  if (ownerInstance) env.XIAOYIN_OWNER_INSTANCE = String(ownerInstance)
+  if (ownerProduct) env.XIAOYIN_OWNER_PRODUCT = String(ownerProduct)
+  // 语音引擎跟着宿主走：用拉起我的这个 DSH 安装里那份 sherpa-onnx-node
+  const sherpa = resolveHostSherpa(process.env)
+  if (sherpa) env.XIAOYIN_SHERPA = sherpa
   // 用户手动叫出来时直接显示窗口；自启动时不设，保持托盘常驻、不打扰
   if (show) env.XIAOYIN_SHOW = '1'
 
@@ -192,7 +222,7 @@ function spawnHelper(exe, args, cwd, { engine, dataDir, pidFile, show, log }) {
 
   try {
     fs.mkdirSync(dataDir, { recursive: true })
-    fs.writeFileSync(pidFile, JSON.stringify({ pid: child.pid, engine, startedAt: Date.now() }), 'utf8')
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: child.pid, engine, startedAt: Date.now(), ownerInstance: ownerInstance || '', ownerProduct: ownerProduct || '' }), 'utf8')
   } catch { /* pid 文件写不了也不影响浮窗运行 */ }
 
   return { started: true, engine, pid: child.pid, exe }

@@ -61,6 +61,7 @@ function splitWakeWords(value) {
  * @returns {{
  *   repoDir: string, desktopDir: string, dataDir: string, runtimeFile: string, logFile: string,
  *   queueDir: string, eventsDir: string, audioDir: string, stateFile: string,
+ *   leaseFile: string, ownerInstance: string, ownerProduct: string,
  *   name: string, hotkey: string, wake: boolean, releaseMicWhenWakeOff: boolean, wakeWords: Array<{text: string, pinyin: string}>,
  *   maxSeconds: number, silenceSeconds: number, language: string, threads: number,
  *   asr: {model: string, tokens: string}, kws: {encoder: string, decoder: string, joiner: string, tokens: string, keywordsFile: string}
@@ -96,6 +97,11 @@ function loadConfig() {
     stateFile: path.join(dataDir, 'window.json'),
     // 宿主进程号；0 表示没拿到（老版本 runtime.json），此时不做看门狗。
     hostPid: positive(runtime.hostPid, 0),
+    // 宿主租约：同时开官方 dsh 和 DSH NEXT 时谁持有小印（见插件根目录 lease.js）。
+    // ownerInstance 由拉起本窗口的宿主通过 XIAOYIN_OWNER_INSTANCE 塞进来。
+    leaseFile: path.join(dataDir, 'lease.json'),
+    ownerInstance: text(process.env.XIAOYIN_OWNER_INSTANCE),
+    ownerProduct: text(process.env.XIAOYIN_OWNER_PRODUCT),
     name,
     hotkey: text(runtime.hotkey, text(raw.hotkey, 'ctrl+alt+j')),
     maxSeconds: positive(runtime.maxSeconds, positive(raw.max_seconds, 20)),

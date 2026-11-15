@@ -22,11 +22,23 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import z from '@deepseek-ai/schemastery'
 
+import { resolveActiveAgent } from './agent.js'
 import { startFloatingWindow, stopFloatingWindow, isProcessAlive, readPid } from './autostart.js'
-import { createLedgerApi } from './ledger-groups.js'
+import {
+  LEASE_HEARTBEAT_MS,
+  acquireLease,
+  consumeTakeover,
+  detectProduct,
+  isLeaseFresh,
+  readLease,
+  releaseLease,
+  renewLease,
+  requestTakeover,
+} from './lease.js'
 import { createLearning } from './learning.js'
 import { createPinyinTool } from './pinyin-match.js'
 
@@ -46,13 +58,22 @@ export const inject = ['sessionController']
 export const Config = z.object({
   dataDir: z.string().default('').description('队列与日志目录，默认 ~/.dsh/voice-copilot'),
   autoStart: z.boolean().default(true).description('DSH 启动时自动拉起语音浮窗'),
+  voiceHost: z
+    .union([z.const('auto'), z.const('stable'), z.const('next')])
+    .default('auto')
+    .description('同时打开官方 dsh 与 DSH NEXT 时谁持有小印：auto=先到先得，stable=官方优先，next=DSH NEXT 优先（被指定的一方启动时会接管）'),
   appDir: z.string().default('').description('高级：浮窗程序目录（默认用插件自带的 desktop/）'),
   pythonw: z.string().default('').description('高级：Python 回退版解释器路径'),
-  name: z.string().default('小印').description('助手称呼，也是默认唤醒词').volatile(),
+  agent: z
+    .string()
+    .default('xiaoyin')
+    .description('绑定哪个智能体包：<仓库>/agents/<id>/agent.json。换人设、换会话目录、换侧栏页都改那边，改这里要重启插件'),
+  agentsDir: z.string().default('').description('高级：智能体包目录，默认插件自带的 agents/'),
+  name: z.string().default('').description('助手称呼，也是默认唤醒词；留空则用智能体包里的 name').volatile(),
   wakeWords: z.string().default('').description('额外唤醒词，用逗号或换行分隔；留空则用称呼自动生成').volatile(),
   prompt: z.string().default('').description('语音助手的补充提示词 / 人设，可用 {{name}} 代入称呼').volatile(),
-  agentPreset: z.string().default('standard').description('语音会话使用的 agent preset').volatile(),
-  cwd: z.string().default('').description('语音会话所在工作区目录，默认用户主目录').volatile(),
+  agentPreset: z.string().default('').description('语音会话使用的 agent preset；留空则用智能体包里声明的那个（再没有就 standard）').volatile(),
+  cwd: z.string().default('').description('语音会话所在工作区目录；留空则用智能体包里声明的那个，再没有就是用户主目录').volatile(),
   hotkey: z.string().default('ctrl+alt+j').description('叫出浮窗的全局热键').volatile(),
   wake: z.boolean().default(true).description('是否监听唤醒词').volatile(),
   releaseMicWhenWakeOff: z
@@ -74,27 +95,18 @@ export const Config = z.object({
 })
 
 const POLL_MS = 120
-const SESSION_TITLE = '语音浮窗'
 // 「回到会话」要跳到的会话：壳会把 dsh-app://app/ 下任何非静态路径原样转给宿主 web 服务，
 // 所以页面半侧（client.js）用同源 fetch 就能取走这条待办，再调 uiWorkspace.openSession 切过去。
 const OPEN_ROUTE = '/__dsh-voice-copilot/open-session'
 const PERSONA_ROUTE = '/__dsh-voice-copilot/preset-persona'
-// 「小印」侧栏页的群白名单：一次读全表，按 username 切换 excluded。
-const LEDGER_ROUTE = '/__dsh-voice-copilot/ledger/chats'
-const LEDGER_EXCLUDE_ROUTE = '/__dsh-voice-copilot/ledger/exclude'
-// 「一键策略」：按订单来源自动圈定白名单（预览 / 应用 / 撤销）。
-const LEDGER_POLICY_ROUTE = '/__dsh-voice-copilot/ledger/policy'
-const LEDGER_POLICY_APPLY_ROUTE = '/__dsh-voice-copilot/ledger/policy/apply'
-const LEDGER_POLICY_UNDO_ROUTE = '/__dsh-voice-copilot/ledger/policy/undo'
 // 「叫出小印」按钮：POST 一下就显示浮窗（进程在跑发事件，没在跑现拉）。
 const SUMMON_ROUTE = '/__dsh-voice-copilot/summon'
 // 超过这个时间没人来取就作废：浮窗早就收起了，用户也不会希望下次打开 DSH 时突然被切会话。
 const OPEN_TTL_MS = 30_000
 // 不指定 cwd 时会话会落在 Host 进程的工作目录（profile 目录），DSH 侧栏里看不见。
-// 用自己的工作目录：插件 config 里的 cwd 优先，其次环境变量 DSH_VOICE_COPILOT_CWD，最后退回主目录。
+// 用自己的工作目录：智能体包里的 cwd 优先，其次插件 config，再其次环境变量，最后退回主目录。
 const DEFAULT_CWD = process.env.DSH_VOICE_COPILOT_CWD || os.homedir()
-const WORKSPACE_TITLE = '语音浮窗'
-const DEFAULT_NAME = '小印'
+const DEFAULT_NAME = '助手'
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true })
@@ -119,6 +131,17 @@ export function apply(ctx, config = {}) {
   const logPath = path.join(dataDir, 'plugin.log')
   const statePath = path.join(dataDir, 'state.json')
 
+  // 本宿主这一趟的身份：浮窗和租约都认 instanceId（pid 会被复用，也会被另一个宿主覆盖）。
+  const instanceId = crypto.randomUUID()
+  const product = detectProduct()
+  const exePath = process.execPath
+  // 只有持有租约的宿主才写 runtime.json、消费队列、拉起/结束浮窗。
+  let isOwner = false
+  // 让位之后的冷静期：别立刻把租约抢回来，免得两个宿主来回抢。
+  let steppedDownUntil = 0
+  let takingOver = false
+  let lastBusyLog = 0
+
   const log = (line) => {
     try {
       fs.appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`, 'utf8')
@@ -126,6 +149,8 @@ export function apply(ctx, config = {}) {
   }
 
   const emit = (payload) => {
+    // 事件是给浮窗看的；没持有租约说明浮窗归别人，别往共享队列里塞噪音。
+    if (!isOwner) return
     try {
       const name = `${String(Date.now()).padStart(14, '0')}-${crypto.randomBytes(4).toString('hex')}.json`
       const target = path.join(eventsDir, name)
@@ -165,11 +190,31 @@ export function apply(ctx, config = {}) {
     const value = liveRaw(field, fallback)
     return typeof value === 'boolean' ? value : fallback
   }
-  const currentName = () => liveText('name', '') || DEFAULT_NAME
-  const currentCwd = () => liveText('cwd', '') || DEFAULT_CWD
-  const currentPreset = () => liveText('agentPreset', '')
-  const currentLedgerDb = () => liveText('ledgerDb', '') || process.env.DSH_VOICE_COPILOT_LEDGER_DB || ''
-  const currentPrinterLogDir = () => liveText('printerLogDir', '') || process.env.DSH_VOICE_COPILOT_PRINTER_LOG_DIR || ''
+  // 智能体包（L2）：称呼、会话目录、预设、侧栏模块、业务配置全从这里拿，
+  // 壳自己不再写死任何一件。包坏了只是退回「没有业务人设」，不挡语音链路。
+  const configuredAgentsDir = (typeof config.agentsDir === 'string' && config.agentsDir.trim()) || ''
+  const { agent } = resolveActiveAgent({
+    requested: liveText('agent', ''),
+    ...(configuredAgentsDir ? { agentsDir: path.resolve(configuredAgentsDir) } : {}),
+    log,
+  })
+  if (agent) log(`agent 包已加载：${agent.id}（${agent.name}）${agent.dir}`)
+  else log('没有加载到智能体包，语音壳按「无业务人设」运行')
+  const agentSetting = (key) => {
+    const value = agent && agent.settings ? agent.settings[key] : ''
+    return typeof value === 'string' ? value.trim() : ''
+  }
+  const sessionTitle = () => (agent && agent.session.sessionTitle) || '语音浮窗'
+  const workspaceTitle = () => (agent && agent.session.workspaceTitle) || '语音浮窗'
+
+  // 优先级：插件配置里显式填的  >  agent.json  >  内置兜底。
+  // P0 过渡期这样写是为了本机现有 cordis.patch.yml 一个字不改、行为完全不变；
+  // P1 把设置面板迁到 agent 包里之后，这几个旧字段就可以删掉了。
+  const currentName = () => liveText('name', '') || (agent && agent.name) || DEFAULT_NAME
+  const currentCwd = () => liveText('cwd', '') || (agent && agent.session.cwd) || DEFAULT_CWD
+  const currentPreset = () => liveText('agentPreset', '') || (agent && agent.session.agentPreset) || 'standard'
+  const currentLedgerDb = () => liveText('ledgerDb', '') || agentSetting('ledgerDb') || process.env.DSH_VOICE_COPILOT_LEDGER_DB || ''
+  const currentPrinterLogDir = () => liveText('printerLogDir', '') || agentSetting('printerLogDir') || process.env.DSH_VOICE_COPILOT_PRINTER_LOG_DIR || ''
 
   // 学习记录：默认开，落 dataDir/learning；本机把它指到仓库 learning/，这样在这个工作目录里
   // 直接读原始记录就能复盘。isHuman/isNoise 延迟引用（它们定义在后面），只在真正收到事件时才调用。
@@ -199,6 +244,10 @@ export function apply(ctx, config = {}) {
     // 宿主进程号：浮窗拿它判断「DSH 还在不在」，宿主一没就自己退出。
     // 每次 DSH 重启 pid 都会变，所以跟着 runtime.json 一起刷新。
     hostPid: process.pid,
+    // 谁在持有小印：浮窗按 instanceId 认人，比 pid 可靠（pid 会被复用/覆盖）。
+    instanceId,
+    product,
+    exePath,
     name: currentName(),
     wakeWords: liveText('wakeWords', '')
       .split(/[,，;；\n]+/)
@@ -238,6 +287,117 @@ export function apply(ctx, config = {}) {
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+  // ------------------------------------------------------------ 宿主租约
+  // 官方 dsh 和 DSH NEXT 共用 DSH_HOME，也就共用这份 dataDir。没有租约时，
+  // runtime.json 是谁后写谁赢，而且任一方 dispose 都会 taskkill 共享的 app.pid
+  // —— 先退出的那个会把另一方的浮窗杀掉。租约把「谁持有」变成显式状态。
+
+  const startWindow = (show) => {
+    if (!show && config.autoStart === false) return null
+    try {
+      const result = startFloatingWindow({
+        appDir: config.appDir,
+        pythonw: config.pythonw,
+        dataDir,
+        show: Boolean(show),
+        ownerInstance: instanceId,
+        ownerProduct: product,
+        log,
+      })
+      log(`floating window ${show ? 'summon' : 'autostart'} ${JSON.stringify(result)}`)
+      return result
+    } catch (error) {
+      log(`floating window start failed: ${error && error.stack ? error.stack : error}`)
+      return null
+    }
+  }
+
+  const becomeOwner = (reason) => {
+    isOwner = true
+    syncRuntime(true)
+    if (reason === 'stale') {
+      // 上一个持有者是被判死的（进程没了或心跳过期），可能留下一个没人管的浮窗。
+      try { stopFloatingWindow({ dataDir }) } catch (error) { log(`stale window cleanup failed: ${error}`) }
+    }
+    log(`voice lease acquired (${reason}) instance=${instanceId} product=${product}`)
+    startWindow(false)
+    return true
+  }
+
+  const claimOwnership = () => {
+    if (isOwner) return true
+    const result = acquireLease({ dataDir, instanceId, hostPid: process.pid, product, exePath })
+    if (result.owner) return becomeOwner(result.reason)
+    const holder = result.holder
+    if (!holder) {
+      log(`voice lease not acquired: ${JSON.stringify(result)}`)
+      return false
+    }
+    if (Date.now() - lastBusyLog > 60_000) {
+      lastBusyLog = Date.now()
+      log(`voice lease busy: holder instance=${holder.instanceId} pid=${holder.hostPid} product=${holder.product}`)
+    }
+    // 优先级：配置里指定了 stable/next，被指定的那一方启动时就把小印接过来。
+    const desired = liveText('voiceHost', 'auto')
+    if (
+      desired !== 'auto' &&
+      product === desired &&
+      holder.product !== product &&
+      isProcessAlive(holder.hostPid) &&
+      isLeaseFresh(holder)
+    ) {
+      void takeOver({ show: false, reason: `priority:${desired}` })
+    }
+    return false
+  }
+
+  const waitForYield = async (holderId, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const current = readLease(dataDir)
+      if (!current || current.instanceId !== holderId) return true
+      await sleep(100)
+    }
+    return false
+  }
+
+  const takeOver = async ({ show = false, reason = 'summon' } = {}) => {
+    if (isOwner) {
+      startWindow(show)
+      return true
+    }
+    if (takingOver) return false
+    takingOver = true
+    try {
+      const holder = readLease(dataDir)
+      if (holder && holder.instanceId !== instanceId && isProcessAlive(holder.hostPid) && isLeaseFresh(holder)) {
+        requestTakeover({ dataDir, from: instanceId })
+        log(`takeover: ask ${holder.instanceId}(pid=${holder.hostPid}) to yield reason=${reason}`)
+        const yielded = await waitForYield(holder.instanceId, 3_000)
+        if (!yielded) {
+          // 对方没响应（插件没在轮询/卡住了）。用户已经明确点了「叫出小印」，强制接管。
+          log('takeover: holder did not yield, taking over by force')
+          try { stopFloatingWindow({ dataDir }) } catch (error) { log(`takeover stop failed: ${error}`) }
+          try { fs.unlinkSync(path.join(dataDir, 'lease.json')) } catch { /* 没有就算了 */ }
+        }
+      }
+      const result = acquireLease({ dataDir, instanceId, hostPid: process.pid, product, exePath })
+      if (!result.owner) {
+        log(`takeover: still not owner ${JSON.stringify(result)}`)
+        return false
+      }
+      // 旧窗口刚被 taskkill，稍等一下再拉，免得撞上 Electron 的单实例锁。
+      await sleep(400)
+      isOwner = true
+      syncRuntime(true)
+      log(`takeover: now owner instance=${instanceId} reason=${reason}`)
+      startWindow(show)
+      return true
+    } finally {
+      takingOver = false
+    }
+  }
+
   // DSH 侧栏是按「工作区」列会话的：只给 cwd 不给 workspaceId，会话虽然写盘了，侧栏里找不到。
   // 所以先把 cwd 登记成一个工作区，再让会话创建在里面。
   // 用户改了 cwd 之后要重新登记，所以缓存里带上 cwd。
@@ -254,7 +414,7 @@ export function apply(ctx, config = {}) {
       ensuredWorkspace = { cwd, id: found.id }
       return found.id
     }
-    const workspace = await registry.create(cwd, WORKSPACE_TITLE)
+    const workspace = await registry.create(cwd, workspaceTitle())
     ensuredWorkspace = { cwd, id: workspace.id }
     log(`created workspace ${workspace.id} at ${cwd}`)
     return workspace.id
@@ -314,6 +474,9 @@ export function apply(ctx, config = {}) {
   const personaText = () => {
     const name = currentName()
     const extra = liveText('prompt', '').replaceAll('{{name}}', name)
+    // 「怎么说话」的规则是壳的事（输出要能直接朗读）；具体到某个业务的例子
+    // （人名、单号、标签页）是 agent 包的事，从包里读，不写在壳里。
+    const notes = agent && typeof agent.voiceNotes === 'function' ? agent.voiceNotes() : ''
     const lines = [
       '【语音助手设定】',
       `你的称呼是「${name}」。用户通过语音浮窗和你对话，回答尽量简短、口语化，适合直接朗读。`,
@@ -322,8 +485,8 @@ export function apply(ctx, config = {}) {
       '- 默认一两句、最多三行，先说结论。不列点、不加粗、不写标题，也不要念出 Markdown 符号。',
       '- 只给用户问的那件事：谁、什么时候、什么东西、现在什么状态、在哪（标签页/单号）、钱。不解释你是怎么查到的，不报工具名，不复述用户的话。',
       '- 一次最多问一个问题、最多给两个选项。候选接近时问「是不是某某」，不要整份名单摆出来让他挑。',
-      '- 例（用户问「刚刚张三发的什么」，只回这一句）：张山在半小时前给你发了「计算机程序设计第二次作业.doc」，已经打好了，本地打印工具在 3 号标签页，订单号 HN2026-0001，钱已经收了。不要拆成三段，也不要再问「你要我看哪一个」。',
     ]
+    if (notes) lines.push(notes)
     if (extra) lines.push('', extra)
     if (learningEnabled()) {
       lines.push(
@@ -417,9 +580,9 @@ export function apply(ctx, config = {}) {
       created = await ctx.sessionController.create(where)
     }
     const sessionId = created.sessionId
-    writeState({ sessionId, title: SESSION_TITLE, cwd, workspaceId, createdAt: Date.now() })
+    writeState({ sessionId, title: sessionTitle(), cwd, workspaceId, createdAt: Date.now() })
     try {
-      await ctx.sessionController.rename({ sessionId, title: SESSION_TITLE })
+      await ctx.sessionController.rename({ sessionId, title: sessionTitle() })
     } catch (error) {
       log(`rename failed: ${error}`)
     }
@@ -706,6 +869,8 @@ export function apply(ctx, config = {}) {
   }
 
   const tick = async () => {
+    // 队列是共用的：只有持有者能消费，否则两个宿主会抢同一批任务。
+    if (!isOwner) return
     if (processing) return
     processing = true
     try {
@@ -719,18 +884,51 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // 租约心跳：持有者每 5s 续一次；跟随者每 5s 看看能不能补位（持有者退出后接管）。
+  const leaseTimer = setInterval(() => {
+    if (isOwner) {
+      const renewed = renewLease({ dataDir, instanceId })
+      if (renewed.lost) {
+        log('voice lease lost: another host took over')
+        isOwner = false
+      }
+      return
+    }
+    if (Date.now() < steppedDownUntil) return
+    claimOwnership()
+  }, LEASE_HEARTBEAT_MS)
+
+  // 让位请求：持有者 400ms 看一次 control/，别人点了「叫出小印」或按优先级接管时松手。
+  const controlTimer = setInterval(() => {
+    if (!isOwner) return
+    const request = consumeTakeover(dataDir)
+    if (!request || request.from === instanceId) return
+    log(`takeover: ${request.from} asked us to yield`)
+    steppedDownUntil = Date.now() + 30_000
+    isOwner = false
+    try { stopFloatingWindow({ dataDir }) } catch (error) { log(`yield stop failed: ${error}`) }
+    releaseLease({ dataDir, instanceId })
+  }, 400)
+
   const timer = setInterval(() => { void tick() }, POLL_MS)
   ctx.effect(() => () => {
     clearInterval(timer)
+    clearInterval(leaseTimer)
+    clearInterval(controlTimer)
     if (followAbort) followAbort.abort()
     try { learning.flush('plugin-dispose') } catch (error) { log(`learning flush failed: ${error}`) }
-    // 小印跟着 DSH 走：宿主退出/插件卸载时把浮窗一起结束掉。
-    // 不额外写 host-closed 事件：那类事件会被下一个宿主拉起的浮窗读到，反而把自己立刻关掉；
-    // taskkill 是同步的，杀不掉还有浮窗自己的 hostPid 看门狗兜底。
+    // 小印跟着「持有它的那个宿主」走：宿主退出/插件卸载时如果租约已经换人，
+    // 说明浮窗正在给另一个 DSH 干活，这一侧的 taskkill 必须忍住。
     try {
-      const stopped = stopFloatingWindow({ dataDir })
-      if (stopped.stopped) log(`floating window stopped pid=${stopped.pid}`)
-      else if (stopped.reason !== 'not-running') log(`floating window stop failed: ${JSON.stringify(stopped)}`)
+      const lease = readLease(dataDir)
+      if (lease && lease.instanceId !== instanceId) {
+        log(`floating window left alone: lease now owned by ${lease.instanceId}`)
+      } else {
+        const stopped = stopFloatingWindow({ dataDir })
+        if (stopped.stopped) log(`floating window stopped pid=${stopped.pid}`)
+        else if (stopped.reason !== 'not-running') log(`floating window stop failed: ${JSON.stringify(stopped)}`)
+      }
+      releaseLease({ dataDir, instanceId })
     } catch (error) {
       log(`floating window stop failed: ${error && error.stack ? error.stack : error}`)
     }
@@ -872,7 +1070,19 @@ export function apply(ctx, config = {}) {
         }
         if ((req.method || 'GET') !== 'GET') { send(405, { preset: '', persona: '' }); return }
         const url = new URL(req.url || '/', 'http://127.0.0.1')
-        const preset = String(url.searchParams.get('preset') || currentPreset() || '').trim()
+        const requested = String(url.searchParams.get('preset') || '').trim()
+        // agent 包里的人设优先：markdown 直接回，preset 才去注册表读原文、抠 prefix。
+        const agentPersona = agent ? agent.persona : null
+        if (!requested && agentPersona && agentPersona.kind === 'markdown') {
+          send(200, { preset: agent.id, persona: agentPersona.text, source: 'agent' })
+          return
+        }
+        const preset = String(
+          requested
+          || (agentPersona && agentPersona.preset)
+          || currentPreset()
+          || '',
+        ).trim()
         if (!preset) { send(200, { preset: '', persona: '', error: '没有配置语音会话预设' }); return }
         try {
           const presets = ctx.get('agentPresets')
@@ -891,34 +1101,40 @@ export function apply(ctx, config = {}) {
       },
     }), 'dsh-voice-copilot: preset persona route')
 
-    // 「小印」侧栏页：群白名单列表与勾选切换。读的是台账 chats 表，
-    // 只改 excluded 标记；台账网页服务没开着也能用。
-    const ledgerApi = createLedgerApi({ dbPath: currentLedgerDb, logDir: currentPrinterLogDir, dataDir, log: (line) => log(line) })
-    webCtx.effect(() => webCtx.webServer.register({
-      kind: 'exact',
-      path: LEDGER_ROUTE,
-      handler: (req, res) => { void ledgerApi.chats(req, res) },
-    }), 'dsh-voice-copilot: ledger chats route')
-    webCtx.effect(() => webCtx.webServer.register({
-      kind: 'exact',
-      path: LEDGER_EXCLUDE_ROUTE,
-      handler: (req, res) => { void ledgerApi.exclude(req, res) },
-    }), 'dsh-voice-copilot: ledger exclude route')
-    webCtx.effect(() => webCtx.webServer.register({
-      kind: 'exact',
-      path: LEDGER_POLICY_ROUTE,
-      handler: (req, res) => { void ledgerApi.policyPreview(req, res) },
-    }), 'dsh-voice-copilot: ledger policy route')
-    webCtx.effect(() => webCtx.webServer.register({
-      kind: 'exact',
-      path: LEDGER_POLICY_APPLY_ROUTE,
-      handler: (req, res) => { void ledgerApi.policyApply(req, res) },
-    }), 'dsh-voice-copilot: ledger policy apply route')
-    webCtx.effect(() => webCtx.webServer.register({
-      kind: 'exact',
-      path: LEDGER_POLICY_UNDO_ROUTE,
-      handler: (req, res) => { void ledgerApi.policyUndo(req, res) },
-    }), 'dsh-voice-copilot: ledger policy undo route')
+    // 智能体包的侧栏页：壳只负责「有 sidebar.module 就 import 它、把 web 上下文递进去」，
+    // 具体是台账白名单还是别的东西，壳不认识。包没声明就什么都不挂。
+    // 用动态 import 是为了壳的静态依赖里不出现任何业务模块；import 结果按 URL 缓存，只真加载一次。
+    if (agent && agent.sidebar && agent.sidebar.module) {
+      webCtx.effect(() => {
+        let disposed = null
+        let cancelled = false
+        void import(pathToFileURL(agent.sidebar.module).href)
+          .then((mod) => {
+            if (cancelled) return
+            if (!mod || typeof mod.mount !== 'function') {
+              log(`agent 侧栏模块没有导出 mount()：${agent.sidebar.module}`)
+              return
+            }
+            disposed = mod.mount({
+              webCtx,
+              dataDir,
+              log: (line) => log(line),
+              config: () => ({ dbPath: currentLedgerDb(), logDir: currentPrinterLogDir() }),
+            })
+            log(`agent 侧栏已挂载：${agent.sidebar.title}（${agent.id}）`)
+          })
+          .catch((error) => {
+            log(`agent 侧栏挂载失败：${error && error.stack ? error.stack : error}`)
+          })
+        return () => {
+          cancelled = true
+          if (typeof disposed === 'function') {
+            try { disposed() } catch { /* 已经随 effect 一起收了 */ }
+          }
+          disposed = null
+        }
+      }, `dsh-voice-copilot: agent sidebar (${agent.id})`)
+    }
 
     // 「叫出小印」：浮窗已经在跑就发一条 summon 事件让它自己 show()；
     // 没在跑（用户手动退出过）就现拉一个并直接显示窗口。
@@ -936,52 +1152,44 @@ export function apply(ctx, config = {}) {
           } catch { /* 页面已经断开，无所谓 */ }
         }
         if ((req.method || 'GET') !== 'POST') { send(405, { ok: false, error: '请用 POST' }); return }
-        try {
-          const pid = readPid(path.join(dataDir, 'app.pid'))
-          if (isProcessAlive(pid)) {
-            emit({ type: 'summon' })
-            log(`summon: 浮窗已在跑 pid=${pid}，发事件叫它显示`)
-            send(200, { ok: true, mode: 'shown', pid })
-            return
+        void (async () => {
+          try {
+            // 不是持有者：这个窗口的「叫出小印」意味着「把小印切到我这来」，
+            // 先走接管握手（对方让位/强制接管），再自己拉起浮窗。
+            if (!isOwner) {
+              log('summon: 本宿主不是持有者，尝试接管')
+              const ok = await takeOver({ show: true, reason: 'summon' })
+              send(ok ? 200 : 409, ok
+                ? { ok: true, mode: 'takeover' }
+                : { ok: false, mode: 'busy', error: '另一个 DSH 正持有小印，接管失败' })
+              return
+            }
+            const pid = readPid(path.join(dataDir, 'app.pid'))
+            if (isProcessAlive(pid)) {
+              emit({ type: 'summon' })
+              log(`summon: 浮窗已在跑 pid=${pid}，发事件叫它显示`)
+              send(200, { ok: true, mode: 'shown', pid })
+              return
+            }
+            const result = startWindow(true)
+            log(`summon: 浮窗没在跑，重新拉起 ${JSON.stringify(result)}`)
+            send(200, {
+              ok: Boolean(result && result.started),
+              mode: result && result.started ? 'started' : 'failed',
+              detail: result,
+            })
+          } catch (error) {
+            const message = String(error && error.message ? error.message : error)
+            log(`summon failed: ${message}`)
+            send(500, { ok: false, error: message })
           }
-          const result = startFloatingWindow({
-            appDir: config.appDir,
-            pythonw: config.pythonw,
-            dataDir,
-            show: true,
-            log,
-          })
-          log(`summon: 浮窗没在跑，重新拉起 ${JSON.stringify(result)}`)
-          send(200, {
-            ok: Boolean(result && result.started),
-            mode: result && result.started ? 'started' : 'failed',
-            detail: result,
-          })
-        } catch (error) {
-          const message = String(error && error.message ? error.message : error)
-          log(`summon failed: ${message}`)
-          send(500, { ok: false, error: message })
-        }
+        })()
       },
     }), 'dsh-voice-copilot: summon route')
   })
 
-  // 先把运行时快照落盘，再拉起浮窗，避免浮窗先启动读到旧配置
-  syncRuntime(true)
-
-  // 小印随 DSH 启动：桌面端一加载本插件，就把浮窗程序拉起来（不用再双击 vbs）。
-  // config.autoStart: false 可关掉；重复拉起由 app.pid + 浮窗自己的命名互斥量兜住。
-  if (config.autoStart !== false) {
-    try {
-      const autostart = startFloatingWindow({
-        appDir: config.appDir,
-        pythonw: config.pythonw,
-        dataDir,
-        log,
-      })
-      log(`floating window autostart ${JSON.stringify(autostart)}`)
-    } catch (error) {
-      log(`floating window autostart failed: ${error && error.stack ? error.stack : error}`)
-    }
-  }
+  // 小印随 DSH 启动：先抢租约。抢到的人才写 runtime.json、拉起浮窗；
+  // 没抢到的宿主什么都不做（浮窗正被另一个 DSH 用着），只留心跳补位。
+  // 三个桌面端同时开也只会有一个人持有；详情见 lease.js 顶部注释。
+  claimOwnership()
 }

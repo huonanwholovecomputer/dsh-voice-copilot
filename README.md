@@ -6,9 +6,12 @@
 
 分两半，靠 `%USERPROFILE%\.dsh\voice-copilot` 里的文件队列通信，不开端口、不碰 DSH 的 HTTP 鉴权。
 
+**架构分层**：这套东西是「语音壳 + 可打包的智能体包」两层（见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)）。壳只管听、说、会话与浮窗；称呼、人设、会话预设/目录、业务配置、侧栏页都归 `agents/<id>/agent.json`。本机绑的是 `agents/xiaoyin/`，插件配置里显式填的值优先于包（P0 过渡期，行为与以前完全一致）。
+
 | 部分 | 位置 | 干什么 |
 | --- | --- | --- |
 | Host 插件 | `index.js`（bundle `@local/dsh-voice-copilot`） | 把文字作为 prompt 送进会话，把助手每轮的流式 / 整段回复写成事件文件 |
+| 智能体包 | `agents/<id>/`（`agent.js` 加载） | 清单 + 语音示例 + 该智能体自己的宿主路由；壳不认识里面的业务 |
 | 浮窗程序 | `desktop/`（Electron） | 托盘常驻、全局热键、听唤醒词、录音、本地识别、显示回答 |
 | 老浮窗 | `app/`（PySide6，仅回退） | 只有找不到 Electron 时才会用；协议与 `desktop/` 完全一样 |
 
@@ -18,7 +21,7 @@
 
 ## 和本地打印项目的关系
 
-小印是本地打印项目（打印机接单 + 微信台账）的**附属项目**，不是另起一摊的通用助手：接单、出纸、记台账才是主线，小印只把「这份文件是谁发的、这个群该不该查」搬进语音。台账 `ledger.db` 与打印机日志都是打印项目那边的产物，本仓库一律**只读不写**；`tools/` 里的检索（`funnel.py`）、样本与评测（`order_labels.py` / `eval_funnel.py` / `learn_loop.py`）、侧栏页的白名单（`whitelist-policy.js`）也都是围着这套数据转的。没有那套数据，小印就退化成一个外接 DSH 会话的语音开麦工具。
+小印是本地打印项目（打印机接单 + 微信台账）的**附属项目**，不是另起一摊的通用助手：接单、出纸、记台账才是主线，小印只把「这份文件是谁发的、这个群该不该查」搬进语音。台账 `ledger.db` 与打印机日志都是打印项目那边的产物，本仓库一律**只读不写**；`tools/` 里的检索（`funnel.py`）、样本与评测（`order_labels.py` / `eval_funnel.py` / `learn_loop.py`）、侧栏页的白名单（`agents/xiaoyin/lib/whitelist-policy.js`）也都是围着这套数据转的。没有那套数据，小印就退化成一个外接 DSH 会话的语音开麦工具。
 
 主线仓库在 <https://github.com/huonanwholovecomputer/h_n-printer>（客户端、订单/用户管理、出纸流程都在那边，本仓库只消费它产出的台账与日志）。
 
@@ -61,7 +64,7 @@
 | 提示词 / 人设 | 作为一条开发者消息注入语音会话，`{{name}}` 会替换成称呼；回答风格、业务背景都写这里 |
 | 全局热键 | 如 `Ctrl+Alt+J`，改完立即重注册 |
 | 监听唤醒词 / 关唤醒词时释放麦克风 | 前者只关 KWS 解码；勾上后者才会连采音流一起放掉（任务栏麦克风图标灭），按热键时才临时开麦，代价是不再有 600 ms 预录 |
-| 语音会话预设 / 工作区目录 | 决定语音会话用哪个 agent preset、落在哪个工作区；改预设只影响之后新建的语音会话 |
+| 语音会话预设 / 工作区目录 | 留空就用 `agents/<id>/agent.json` 里声明的值；这两项是过渡期的覆盖项，P1 会迁进智能体包 |
 | 静音判定 / 最长录音 / 识别语言 | 端点与 SenseVoice 参数 |
 | 学习记录开关 / 目录 | 默认开，记到 `<dataDir>/learning`；本机指到仓库 `learning/`，见下节 |
 | 记录截断（思考/参数/返回） | 默认 4000 / 2000 / 1500 字符，超出截断但保留原长 |
@@ -209,6 +212,32 @@ Python 回退版还支持 FireRedASR2 int8（`models/fire-red-asr2-int8/`、`fir
 - 自启：`{"started":true,"engine":"electron","pid":...+exe:...\\electron.exe}`，第二次调用返回 `already-running`；热键与还在跑的 Python 版互斥，杀掉旧的之后立刻注册成功。
 - 窗口位置：主屏 2560×1600 / 150% 缩放下落在底部居中（workArea 里 `(1707-720)/2`、离底 `520+24`），DPI 感知截图核对过不越界。
 - 窗口尺寸：CDP 驱动实测——右下角拖 +40/+40 得到 +40/+40；上边下拖 44 得到高 -44、`y` +46（底边钉住）；左边右拖 44 得到宽 -44、`x` +45（右边钉住）；强塞 120×90 被夹到 420×320；`window.json` 落了 `size`，重启后按存的尺寸恢复。
+
+## 同时开着官方 dsh 和 DSH NEXT
+
+两个桌面端共用 `DSH_HOME`（`~/.dsh`），因此共用同一个 desktop profile、同一份 `voice-copilot` 数据目录。以前只有一个 `runtime.json.hostPid`：谁后启动谁覆盖，而且任一方退出时都 `taskkill` 同一个 `app.pid` —— 先退出的会把另一方的浮窗杀掉。
+
+现在「谁持有小印」是一份显式租约：`<dataDir>/lease.json`。
+
+- 只有持有者写 `runtime.json`、消费 `queue/`、拉起和结束浮窗；另一个宿主什么都不做（不显示浮窗、不抢队列）。
+- 持有者每 5 s 续一次心跳；心跳超过 20 s 没续、或宿主进程不在了，别人可以接管（`reason: stale`）。
+- 抢租约在 `lease.lock`（`O_EXCL` 原子创建）里做「读—判断—写」，两个宿主同时启动也只会有一个人写成功。
+- 退出时只释放自己的租约：如果租约已经换人，这一侧的 dispose **不会**再 taskkill 共享的浮窗。
+- 在「没持有小印」的那个 DSH 里点「叫出小印」＝把小印切过来：先写 `control/takeover.json` 请对方让位，对方 400 ms 内看到就让出（3 s 没反应则强制接管，旧窗口关掉后重开）。接口回 `{mode:'takeover'}`；两个宿主都没有响应时才回 409。
+
+插件配置里多了一项 `voiceHost`：
+
+| 值 | 行为 |
+| --- | --- |
+| `auto`（默认） | 先到先得；先启动的那一方持有，另一方只挂心跳 |
+| `stable` | 官方 dsh 启动时接管（不管谁先开） |
+| `next` | DSH NEXT 启动时接管 |
+
+「哪一方」由进程安装路径推断（`...\Programs\DSH NEXT\...` → `next`，`...\DeepSeek Harness\...` → `stable`），认不出来就是 `unknown`，`voiceHost` 对它不生效，退回先到先得。被指定的一方接管后，原来那一方进入 30 s 冷静期，不会立刻抢回去。
+
+浮窗自己也认租约：它启动时拿到宿主塞的 `XIAOYIN_OWNER_INSTANCE`，每 2 s 比对 `lease.json`；租约换人（或心跳过期）就自己退出，不会变成一个孤儿窗口。
+
+语音引擎（`sherpa-onnx-node`）跟着**拉起它的那个宿主**走：`autostart.js` 从宿主的 `resources/` 里找到那份原生模块，通过 `XIAOYIN_SHERPA` 传给浮窗，而不是写死 DSH NEXT 的安装路径。
 
 ## 已知限制
 
