@@ -440,12 +440,17 @@ window.__ModuleLoader__.load({
           const res = await fetch(LEDGER_ROUTE, { cache: 'no-store', credentials: 'same-origin' })
           const data = await res.json().catch(() => ({}))
           if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`)
+          const chats = Array.isArray(data.chats) ? data.chats : []
+          const baseline = {}
+          for (const item of chats) baseline[item.username] = Boolean(item.excluded)
           setState({
             status: 'ready',
             error: '',
             db: asText(data.db),
             counts: data.counts || null,
-            chats: Array.isArray(data.chats) ? data.chats : [],
+            chats,
+            baseline,
+            pending: 0,
           })
         } catch (error) {
           setState({
@@ -454,6 +459,8 @@ window.__ModuleLoader__.load({
             db: '',
             counts: null,
             chats: [],
+            baseline: {},
+            pending: 0,
           })
         }
       }
@@ -491,6 +498,7 @@ window.__ModuleLoader__.load({
                 directsIncluded: nextDirects.filter((item) => !item.excluded).length,
                 directsExcluded: nextDirects.filter((item) => item.excluded).length,
               },
+              pending: (Number(prev.pending) || 0) + 1,
             }
           })
         } catch (error) {
@@ -556,16 +564,21 @@ window.__ModuleLoader__.load({
       }
 
       const counts = state.counts || { chats: 0, groups: 0, included: 0, excluded: 0, directs: 0, directsIncluded: 0, directsExcluded: 0 }
+      // 勾选/取消只改后端和本地这一行，不重排列表：分组顺序和「只看已排除」都按上次刷新时的
+      // 快照（baseline）算，这样点一下不会让行从鼠标底下跳走；想重排就手动点「刷新」。
+      const baseline = state.baseline || {}
+      const excludedAtLoad = (item) => (item.username in baseline ? Boolean(baseline[item.username]) : Boolean(item.excluded))
       const needle = query.trim().toLowerCase()
       const matchesFilter = (item) => {
-        if (onlyExcluded && !item.excluded) return false
+        if (onlyExcluded && !excludedAtLoad(item)) return false
         if (!needle) return true
         return `${item.name} ${item.note} ${item.username} ${item.preview}`.toLowerCase().includes(needle)
       }
       // 排序：已选中的在前 → 未选中的在后 → 文件数从多到少 → 名字（中文按拼音，数字按大小）。
+      // 用刷新时的状态排序，不跟着勾选实时变。
       const nameCollator = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
       const byStatusThenFilesThenName = (a, b) =>
-        (Number(Boolean(a.excluded)) - Number(Boolean(b.excluded)))
+        (Number(excludedAtLoad(a)) - Number(excludedAtLoad(b)))
         || (Number(b.files) || 0) - (Number(a.files) || 0)
         || nameCollator.compare(a.name, b.name)
       const groups = state.chats.filter((item) => item.isGroup).filter(matchesFilter).sort(byStatusThenFilesThenName)
@@ -794,6 +807,10 @@ window.__ModuleLoader__.load({
             h('input', { type: 'checkbox', checked: onlyExcluded, onChange: (event) => setOnlyExcluded(event.target.checked) }),
             '只看已排除',
           ),
+          state.pending
+            ? h('span', { style: { fontSize: '0.82em', opacity: 0.7 } },
+              `已改动 ${state.pending} 项，已保存；列表还是刷新前的顺序，点「刷新」重排`)
+            : null,
           h('span', { style: { flex: 1 } }),
           h('button', { style: buttonStyle, onClick: () => { void load() }, disabled: state.status === 'loading' },
             state.status === 'loading' ? '读取中…' : '刷新'),
