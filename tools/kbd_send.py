@@ -53,6 +53,21 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# 操作节奏
+# ---------------------------------------------------------------------------
+
+# 店主 2026-11-16：「每个操作之间的等待时间都减少一半」。
+# 只压「人手节奏」的等待；等微信开窗、等搜索面板关闭这两处不靠固定秒数，
+# 改成小步轮询——快的时候更早继续，慢的时候最多等到原来的一半为止。
+STEP_SCALE = 0.5
+
+
+def _pace(seconds: float, floor: float = 0.0) -> float:
+    """按 STEP_SCALE 压缩一段等待，但绝不低于 floor 秒。"""
+    return max(floor, seconds * STEP_SCALE)
+
+
+# ---------------------------------------------------------------------------
 # SendInput：40 字节的 INPUT（x64）
 # ---------------------------------------------------------------------------
 
@@ -421,11 +436,28 @@ def _ensure_wechat_front(*, tries: int = 3, wait: float = 1.3) -> tuple[bool, st
         return True, f"已在前台（{info}）"
     for i in range(tries):
         chord(VK_CONTROL, VK_MENU, VK_W)
-        time.sleep(wait)
+        time.sleep(_pace(wait, 0.5))
         ok, info = _foreground_is_wechat()
         if ok:
             return True, f"第 {i + 1} 次 Ctrl+Alt+W 后到前台（{info}）"
     return False, f"按了 {tries} 次 Ctrl+Alt+W 微信仍不在前台（当前：{info}）"
+
+
+def _wait_left_pane_change(before, *, timeout: float = 1.3,
+                           step: float = 0.12) -> tuple[bool, float | None]:
+    """等左侧会话列表出现可见变化，出现就返回，最多等 timeout 秒。
+
+    比原来「睡固定 1.4s 再看一眼」快得多，也不会因为微信响应慢就漏判。
+    """
+    deadline = time.monotonic() + timeout
+    change = None
+    while time.monotonic() < deadline:
+        time.sleep(step)
+        after = _grab_left_pane()
+        change = _diff_ratio(before, after)
+        if change is not None and change > 0.05:
+            return True, change
+    return False, change
 
 
 def _open_chat_core(to: str, mark, result: dict) -> bool:
@@ -445,16 +477,16 @@ def _open_chat_core(to: str, mark, result: dict) -> bool:
 
     # 1. Ctrl+F 打开搜索（打开后先清空残留：微信会记住上次搜过的词）
     chord(VK_CONTROL, VK_F)
-    time.sleep(0.6)
+    time.sleep(_pace(0.6, 0.3))
     chord(VK_CONTROL, VK_A)          # 选中残留
-    time.sleep(0.15)
+    time.sleep(_pace(0.15, 0.08))
     key(VK_BACK)                      # 删掉
-    time.sleep(0.3)
+    time.sleep(_pace(0.3, 0.15))
     mark("1-ctrl-f")
 
     # 2. 打全名（Unicode 直发，绕过输入法）
     typed, total = type_unicode(to)
-    time.sleep(0.9)
+    time.sleep(_pace(0.9, 0.45))
     mark("2-typed-name", {"typed": f"{typed}/{total}"})
     if typed != total:
         result.update(state="failed", reason=f"名字只打进 {typed}/{total} 个字符")
@@ -464,21 +496,12 @@ def _open_chat_core(to: str, mark, result: dict) -> bool:
     #    否则下一段 Ctrl+V 会把正文粘进搜索框（2026-11-06 踩过）。
     before_pane = _grab_left_pane()
     key(VK_RETURN)
-    time.sleep(1.4)
-    after_pane = _grab_left_pane()
-    change = _diff_ratio(before_pane, after_pane)
-    opened = change is not None and change > 0.05
+    # 原来是「死等 1.4s 再看一眼 + 没开再等 1.2s」。改成每 0.12s 看一眼，
+    # 开得快就早走（一般 0.2–0.3s），开得慢最多等到 1.3s（原来 2.6s）。
+    opened, change = _wait_left_pane_change(before_pane, timeout=1.3)
     mark("3-enter-opened-chat",
          {"left_pane_change": None if change is None else round(change, 3),
           "opened": opened})
-    if change is not None and not opened:
-        # 再给一次机会：可能只是搜索还在加载
-        time.sleep(1.2)
-        after2 = _grab_left_pane()
-        change2 = _diff_ratio(before_pane, after2)
-        if change2 is not None and change2 > 0.05:
-            opened = True
-            mark("3b-retry-opened", {"left_pane_change": round(change2, 3)})
     if not opened:
         result.update(
             state="failed",
@@ -516,7 +539,7 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
         result.update(state="failed", reason="写剪贴板失败")
         return result
     chord(VK_CONTROL, VK_V)
-    time.sleep(0.9)
+    time.sleep(_pace(0.9, 0.45))
     mark("4-pasted")
 
     if dry_run:
@@ -527,7 +550,7 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
     # 5. 回车发送
     before = watermark(_resolve_username(to))
     key(VK_RETURN)
-    time.sleep(1.0)
+    time.sleep(_pace(1.0, 0.5))
     mark("5-enter-sent")
 
     # 6. 发送后核对（2026-11-10 店主原话：「不用数据库读这个步骤」）
