@@ -13,11 +13,21 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 
+/** 事件名前 14 位是零填充的 Date.now()（index.js 那边 emit 时 padStart(14,'0')），字典序＝时间序。 */
+function millisOf(name) {
+  return String(name).slice(0, 14)
+}
+
 class Bridge {
   constructor({ dataDir }) {
     this.dataDir = dataDir
     this.queueDir = path.join(dataDir, 'queue')
     this.eventsDir = path.join(dataDir, 'events')
+    // 已经消费到哪一毫秒（事件名前 14 位）。只增不减，没有「忘掉老名字再当成新事件」这种回头路。
+    // 以前这里只有一个「最多 4000 个名字」的 Set，超了就砍成最后 1000 个——被砍掉的老名字下一轮
+    // 又变回新事件重放，历史被反复重建、列表疯狂滚动就是这么来的。
+    this.watermark = ''
+    // 同一毫秒里还没删掉的文件名；只是兜底，正常情况下读完就删，不需要靠它去重。
     this.seen = new Set()
   }
 
@@ -69,16 +79,47 @@ class Bridge {
     return this.enqueue({ kind: 'ping', history: true })
   }
 
-  /** 启动时把已有事件当读过的，免得旧对话被重放。 */
+  /**
+   * 启动时把已有事件当读过的，免得旧对话被重放。
+   *
+   * 只「记成读过」不够：这些文件谁都不删，攒到几千个之后，任何「只记住最近 N 个名字」的
+   * 剪枝都会把更老的名字忘掉，下一轮又当新事件重放一遍。所以启动时直接把旧事件清掉——
+   * 按设计它们本来就不该再出现。
+   */
   skipHistory() {
+    let names = []
     try {
-      this.seen = new Set(fs.readdirSync(this.eventsDir).filter((n) => n.endsWith('.json')))
+      names = fs.readdirSync(this.eventsDir).filter((n) => n.endsWith('.json')).sort()
     } catch {
-      this.seen = new Set()
+      names = []
     }
+    if (names.length) this.watermark = millisOf(names[names.length - 1])
+    this.pruneConsumed()
   }
 
-  /** 返回上次调用之后新产生的事件（按文件名排序 = 时间序）。 */
+  /** 删掉水位线及以前的旧事件（已经消费过，或者启动时按设计跳过的）。返回删了几个。 */
+  pruneConsumed() {
+    if (!this.watermark) return 0
+    let names = []
+    try {
+      names = fs.readdirSync(this.eventsDir).filter((n) => n.endsWith('.json'))
+    } catch {
+      return 0
+    }
+    let removed = 0
+    for (const name of names) {
+      if (millisOf(name) > this.watermark) continue
+      try {
+        fs.unlinkSync(path.join(this.eventsDir, name))
+        removed += 1
+      } catch {
+        /* 删不掉就留着：名字在水位线以下，不会再被当成新事件 */
+      }
+    }
+    return removed
+  }
+
+  /** 返回上次调用之后新产生的事件（按文件名排序 = 时间序），读过的文件顺手删掉。 */
   poll() {
     let names
     try {
@@ -88,15 +129,42 @@ class Bridge {
     }
     const fresh = []
     for (const name of names) {
-      if (this.seen.has(name)) continue
+      const ms = millisOf(name)
+      if (this.watermark && ms < this.watermark) {
+        // 水位线以下：老事件，或者上一轮读过但没删掉的文件。只补删，不再往外吐。
+        try {
+          fs.unlinkSync(path.join(this.eventsDir, name))
+        } catch {
+          /* 留着也只会在水位线以下，不会重放 */
+        }
+        continue
+      }
+      if (this.seen.has(name)) {
+        try {
+          fs.unlinkSync(path.join(this.eventsDir, name))
+        } catch {
+          /* 同上 */
+        }
+        continue
+      }
+      if (ms > this.watermark) {
+        this.watermark = ms
+        this.seen.clear()
+      }
       this.seen.add(name)
       try {
         fresh.push(JSON.parse(fs.readFileSync(path.join(this.eventsDir, name), 'utf8')))
       } catch {
-        /* 半个文件：跳过，下轮也不会再读（名字已经记过） */
+        /* 半个文件：跳过，下轮也不会再读（名字已经在水位线里） */
       }
+      let removed = true
+      try {
+        fs.unlinkSync(path.join(this.eventsDir, name))
+      } catch {
+        removed = false
+      }
+      if (removed) this.seen.delete(name)
     }
-    if (this.seen.size > 4000) this.seen = new Set(names.slice(-1000))
     return fresh
   }
 }
