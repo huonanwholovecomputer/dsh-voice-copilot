@@ -83,6 +83,18 @@ export const Config = z.object({
     .volatile(),
   silenceSeconds: z.number().min(0.3).max(10).default(1.2).description('说完后静音多久自动结束').volatile(),
   maxSeconds: z.number().min(3).max(120).default(20).description('一次录音最长秒数').volatile(),
+  voiceprint: z
+    .boolean()
+    .default(true)
+    .description('只认机主的声音：唤醒后先校验声纹，不像会先弹面板问你；关掉就是谁都能叫醒')
+    .volatile(),
+  voiceprintThreshold: z
+    .number()
+    .min(0.3)
+    .max(0.95)
+    .default(0.5)
+    .description('声纹通过阈值（余弦相似度）；越高越严，太低会认错人')
+    .volatile(),
   language: z.string().default('zh').description('SenseVoice 识别语言').volatile(),
   learning: z.boolean().default(true).description('记录每轮思考、工具调用与回复，供离线复盘').volatile(),
   learningDir: z.string().default('').description('学习记录目录，默认 <dataDir>/learning；可指向本仓库 learning/').volatile(),
@@ -259,6 +271,8 @@ export function apply(ctx, config = {}) {
     releaseMicWhenWakeOff: liveBool('releaseMicWhenWakeOff', false),
     silenceSeconds: liveNumber('silenceSeconds', 1.2),
     maxSeconds: liveNumber('maxSeconds', 20),
+    voiceprint: liveBool('voiceprint', true),
+    voiceprintThreshold: liveNumber('voiceprintThreshold', 0.5),
     language: liveText('language', '') || 'zh',
   })
   let runtimeJson = ''

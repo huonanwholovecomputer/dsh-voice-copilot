@@ -30,6 +30,7 @@
       </span>
 
       <div class="actions">
+        <button class="pill" id="voiceprintBtn" type="button" title="声纹：只认机主的声音">声纹</button>
         <button class="pill" id="backToSession" type="button">回到会话</button>
         <button class="icon-btn" id="closeBtn" type="button" aria-label="收起窗口" title="收起（Esc）">
           <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -90,6 +91,32 @@
     <!-- 轻提示 -->
     <div class="toast" id="toast" role="status">
       <span class="toast-text" id="toastText"></span>
+    </div>
+
+    <!-- 声纹面板：注册 / 「这句不像你」时确认 -->
+    <div class="vp" id="vp" hidden>
+      <div class="vp-card" role="dialog" aria-modal="true" aria-labelledby="vpTitle">
+        <div class="vp-head">
+          <span class="vp-title" id="vpTitle">声纹</span>
+          <button class="icon-btn" id="vpClose" type="button" aria-label="关闭声纹面板" title="关闭">
+            <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M2.4 2.4 L9.6 9.6 M9.6 2.4 L2.4 9.6"
+                    stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <p class="vp-text" id="vpText"></p>
+        <!-- 录制时的实时反馈：面板盖住了标题栏计时，这里得自己报秒数 -->
+        <div class="vp-live" id="vpLive" hidden>
+          <span class="vp-live-dot" aria-hidden="true"></span>
+          <span class="vp-live-time" id="vpLiveTime">0:00</span>
+          <span class="vp-live-label" id="vpLiveLabel">正在听这一句…</span>
+        </div>
+        <div class="vp-actions">
+          <button class="pill" id="vpPrimary" type="button" hidden></button>
+          <button class="pill" id="vpSecondary" type="button" hidden></button>
+        </div>
+      </div>
     </div>
 
     <!-- 右下角三撇：告诉用户这块能拖着改大小 -->

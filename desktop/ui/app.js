@@ -21,6 +21,15 @@
     cancel: () => Promise.resolve(),
     stopRecording: () => Promise.resolve({ ok: true, stopped: false }),
     resize: () => {},
+    voiceprint: {
+      status: () => Promise.resolve({ ok: true, available: false, enabled: false, enrolled: false, threshold: 0, reason: 'stub' }),
+      enroll: () => Promise.resolve({ ok: false, error: 'stub' }),
+      cancel: () => Promise.resolve({ ok: true }),
+      accept: () => Promise.resolve({ ok: false, error: 'stub' }),
+      drop: () => Promise.resolve({ ok: false }),
+      remove: () => Promise.resolve({ ok: false }),
+      onEvent: () => () => {},
+    },
     audio: {
       start: () => Promise.resolve({ ok: true, sampleRate: 16000, device: 'stub' }),
       stop: () => Promise.resolve(),
@@ -49,6 +58,18 @@
   const sendBtn = $('sendBtn')
   const toastEl = $('toast')
   const toastText = $('toastText')
+
+  // 声纹面板
+  const vpEl = $('vp')
+  const vpTitleEl = $('vpTitle')
+  const vpTextEl = $('vpText')
+  const vpPrimaryEl = $('vpPrimary')
+  const vpSecondaryEl = $('vpSecondary')
+  const vpCloseEl = $('vpClose')
+  const vpLiveEl = $('vpLive')
+  const vpLiveTimeEl = $('vpLiveTime')
+  const vpLiveLabelEl = $('vpLiveLabel')
+  const voiceprintBtn = $('voiceprintBtn')
 
   /* ---------------- 2. 状态 ---------------- */
 
@@ -96,6 +117,7 @@
 
     // 「思考中」只在等第一个字的时候出现：说完了、模型还在想，界面不能像卡死
     if (statusEl) statusEl.classList.toggle('on', state.phase === 'thinking')
+    syncTyping()
 
     if (state.phase === 'recording') {
       meterEl.classList.add('on')
@@ -222,7 +244,9 @@
     meter.raf = 0
     if (state.phase !== 'recording') return
     syncRecordingClock()
-    timerEl.textContent = formatMs(recClock.ms + (performance.now() - recClock.at))
+    const shownMs = recClock.ms + (performance.now() - recClock.at)
+    timerEl.textContent = formatMs(shownMs)
+    vpSyncLive(shownMs)
     drawMeter()
     meter.raf = requestAnimationFrame(recordingFrame)
   }
@@ -308,7 +332,10 @@
     for (let i = 0; i < messages.length; i += 1) {
       list.appendChild(buildMessage(messages[i]))
     }
+    // list 每次清空重建，typing row 得重新挂回去
+    if (messages.length > 0) list.appendChild(typingRow)
     emptyEl.classList.toggle('hidden', messages.length > 0)
+    syncTyping(stick)
     if (stick) {
       pinToBottom()
     } else {
@@ -317,7 +344,12 @@
     syncScrolled()
   }
 
+  // 事件和启动快照会撞车：先到的算数，晚到的那份只补空档
+  let gotState = false
+  let gotMessages = false
+
   function onMessages(next) {
+    gotMessages = true
     const arr = Array.isArray(next) ? next : []
     const sig = JSON.stringify(arr)
     if (sig === lastSignature) return
@@ -329,8 +361,69 @@
     renderMessages(grewWithUser)
   }
 
+  // 等答复：发出去之后、回复回来之前，在会话底部留一行「正在思考」。
+  // 标题栏那个小胶囊太容易看漏，跑工具（打印、微信）十几秒时窗口看着就像卡死了。
+  const typingRow = document.createElement('div')
+  typingRow.className = 'thinking'
+  typingRow.setAttribute('role', 'status')
+  typingRow.setAttribute('aria-live', 'polite')
+
+  const typingText = document.createElement('span')
+  typingText.className = 'thinking-text'
+  typingText.textContent = '正在思考'
+
+  const typingDots = document.createElement('span')
+  typingDots.className = 'thinking-dots'
+  typingDots.setAttribute('aria-hidden', 'true')
+  for (let i = 0; i < 3; i += 1) typingDots.appendChild(document.createElement('i'))
+
+  typingRow.appendChild(typingText)
+  typingRow.appendChild(typingDots)
+
+  function awaitingReply() {
+    const phase = state.phase
+    if (phase !== 'thinking' && phase !== 'replying') return false
+    if (messages.length === 0) return false
+    const last = messages[messages.length - 1]
+    if (!last) return false
+    // 回复已经到了：正在一字一字滚，就不叠这一行。
+    // （phase 还是 thinking 但最后一条已经是助手消息，说明是跑工具的中场，照常显示。）
+    if (phase === 'replying' && last.role === 'assistant') return false
+    return true
+  }
+
+  let typingOn = false
+  let typingTimer = 0
+
+  function setTyping(on, stick) {
+    if (on === typingOn) return
+    typingOn = on
+    typingRow.classList.toggle('on', on)
+    if (on && (stick || atBottom())) pinToBottom()
+  }
+
+  function syncTyping(stick) {
+    const want = awaitingReply()
+    if (want) {
+      if (typingOn || typingTimer) return
+      // 收尾时 done 和 turn-end 常常前后脚到，等 240ms 还缺答复才亮，
+      // 免得每句话说完都闪一下「正在思考」。
+      typingTimer = setTimeout(() => {
+        typingTimer = 0
+        if (awaitingReply()) setTyping(true, stick)
+      }, 240)
+      return
+    }
+    if (typingTimer) {
+      clearTimeout(typingTimer)
+      typingTimer = 0
+    }
+    setTyping(false)
+  }
+
   function onState(payload) {
     if (!payload || typeof payload !== 'object') return
+    gotState = true
     if (VALID_PHASES.indexOf(payload.phase) >= 0) state.phase = payload.phase
     state.level = clamp01(payload.level)
     if (typeof payload.wake === 'boolean') state.wake = payload.wake
@@ -782,9 +875,219 @@
     path.setAttribute('d', d)
   }
 
+  /* ---------------- 9. 声纹（只认机主） ---------------- */
+
+  const vpApi = api.voiceprint || {}
+  const vpState = { mode: '', status: null, want: 3, index: 0 }
+
+  // 面板一开就把标题栏的计时盖住了，录制中得在面板里自己报秒数。
+  function vpSyncLive(ms) {
+    if (!vpLiveEl) return
+    const live = vpState.mode === 'enroll' && state.phase === 'recording' && !vpEl.hidden
+    vpLiveEl.hidden = !live
+    if (!live) return
+    const index = Math.min(Number(vpState.index) || 0, Math.max(0, (Number(vpState.want) || 3) - 1))
+    vpLiveTimeEl.textContent = formatMs(ms)
+    vpLiveLabelEl.textContent = `正在听第 ${index + 1} 句…`
+  }
+
+  function vpHideLive() {
+    if (vpLiveEl) vpLiveEl.hidden = true
+  }
+
+  function vpOpen() {
+    if (vpEl) vpEl.hidden = false
+  }
+
+  function vpClose() {
+    if (vpEl) vpEl.hidden = true
+    vpState.mode = ''
+    vpHideLive()
+  }
+
+  function vpRender({ title, text, primary, secondary }) {
+    if (!vpEl) return
+    vpOpen()
+    vpHideLive()
+    vpTitleEl.textContent = title
+    vpTextEl.textContent = text
+    const setBtn = (el, spec) => {
+      if (!el) return
+      if (!spec) {
+        el.hidden = true
+        el.textContent = ''
+        el.onclick = null
+        return
+      }
+      el.hidden = false
+      el.textContent = spec.label
+      el.onclick = spec.onClick
+    }
+    setBtn(vpPrimaryEl, primary)
+    setBtn(vpSecondaryEl, secondary)
+  }
+
+  function vpRenderStatus(status) {
+    const s = status || {}
+    if (!s.available) {
+      vpRender({
+        title: '声纹不可用',
+        text: `没加载到声纹模型：${s.reason || '模型缺失'}\n把 3dspeaker 的 CAM++ 模型放到 models/ 下就能用。`,
+      })
+      return
+    }
+    if (!s.enrolled) {
+      vpRender({
+        title: '声纹 · 还没注册',
+        text: `点「录制 3 句」，连着说三句两三秒的话（内容随便）。\n注册后唤醒小印时会先验一下是不是你，相似度低于 ${s.threshold} 就先问你。`,
+        primary: { label: '录制 3 句', onClick: () => vpStartEnroll(s.samples || 3) },
+      })
+      return
+    }
+    const selfCheck = Number(s.selfCheck)
+    vpRender({
+      title: '声纹 · 已注册',
+      text: `已记住你的声音（${s.samples || 3} 句${Number.isFinite(selfCheck) ? `，自检 ${selfCheck.toFixed(2)}` : ''}）。\n阈值 ${s.threshold}：像你的才直接接话，不像会先弹这一下面板。`,
+      primary: { label: '重新录制', onClick: () => vpStartEnroll(3) },
+      secondary: { label: '删除声纹', onClick: () => vpRemove() },
+    })
+  }
+
+  async function vpRefresh() {
+    let status = null
+    try {
+      status = await vpApi.status()
+    } catch (err) {
+      status = { available: false, reason: '读不到声纹状态' }
+    }
+    vpState.status = status
+    vpRenderStatus(status)
+  }
+
+  async function vpStartEnroll(want) {
+    vpState.mode = 'enroll'
+    vpState.index = 0
+    const result = await vpApi.enroll(want)
+    if (!result || !result.ok) {
+      vpState.mode = ''
+      vpRender({
+        title: '声纹',
+        text: (result && result.error) || '没法开始录制',
+        primary: { label: '重试', onClick: () => vpRefresh() },
+      })
+      return
+    }
+    vpState.want = result.want || want || 3
+    vpRender({
+      title: `录制声纹 · 0/${vpState.want}`,
+      text: '请说话——随便一句，两三秒就行。说完停一下，我会接着录下一句。',
+      secondary: { label: '取消', onClick: () => { vpApi.cancel(); vpClose() } },
+    })
+  }
+
+  function vpEnrollCancel() {
+    if (vpApi.cancel) Promise.resolve(vpApi.cancel()).catch(() => {})
+    vpClose()
+  }
+
+  function vpRenderEnroll(p) {
+    const index = Number(p.index) || 0
+    const want = Number(p.want) || vpState.want || 3
+    vpState.index = index
+    if (p.ok === false) {
+      vpRender({
+        title: `录制声纹 · ${index}/${want}`,
+        text: p.error || '这一句没录好，再说一次',
+        secondary: { label: '取消', onClick: vpEnrollCancel },
+      })
+      return
+    }
+    vpState.mode = 'enroll'
+    vpRender({
+      title: `录制声纹 · ${index}/${want}`,
+      text: index >= want ? '够了，正在保存…' : `第 ${index + 1} 句：再说一句两三秒的话。`,
+      secondary: { label: '取消', onClick: vpEnrollCancel },
+    })
+  }
+
+  function vpRenderRejected(p) {
+    const score = Number(p.score)
+    const thr = Number(p.threshold)
+    vpRender({
+      title: '这句不像你',
+      text: `相似度 ${Number.isFinite(score) ? score.toFixed(2) : '?'}，低于阈值 ${Number.isFinite(thr) ? thr : '?'}。\n${p.reason ? `${p.reason}\n` : ''}如果不是你说的，选「丢弃」；是你说的话就照常发出去。`,
+      primary: { label: '仍然发送', onClick: () => { vpClose(); vpApi.accept() } },
+      secondary: { label: '丢弃', onClick: () => { vpClose(); vpApi.drop() } },
+    })
+  }
+
+  async function vpRemove() {
+    try {
+      await vpApi.remove()
+    } catch (err) {
+      console.warn('[xiaoyin] 删除声纹失败', err)
+    }
+    await vpRefresh()
+  }
+
+  function bindVoiceprint() {
+    if (voiceprintBtn) {
+      voiceprintBtn.addEventListener('click', () => {
+        if (vpEl && !vpEl.hidden) {
+          vpClose()
+          return
+        }
+        void vpRefresh()
+      })
+    }
+    if (vpCloseEl) {
+      vpCloseEl.addEventListener('click', () => {
+        if (vpState.mode === 'enroll') vpEnrollCancel()
+        else vpClose()
+      })
+    }
+    if (!vpApi.onEvent) return
+    vpApi.onEvent((payload) => {
+      if (!payload) return
+      if (payload.kind === 'rejected') {
+        vpRenderRejected(payload)
+        return
+      }
+      if (payload.kind === 'enroll-progress') {
+        vpRenderEnroll(payload)
+        return
+      }
+      if (payload.kind === 'enroll-done') {
+        if (payload.ok) {
+          vpClose()
+          showToast('声纹已注册，往后只认你的声音', 'info')
+          return
+        }
+        vpState.mode = ''
+        vpRender({
+          title: '声纹没注册上',
+          text: payload.error || '样本不够，再试一次',
+          primary: { label: '重试', onClick: () => vpRefresh() },
+        })
+        return
+      }
+      if (payload.kind === 'resolved') vpClose()
+    })
+  }
+
   async function boot() {
     buildDivider()
     bindSubscriptions()
+    // 窗口刚起来时 history 可能比订阅早到几十毫秒，那一份就没人接了。
+    // 订阅完主动要一次快照：已经在路上的事件优先，快照只补还没到的部分。
+    try {
+      const snap = await api.snapshot()
+      if (snap && snap.state && !gotState) onState(snap.state)
+      if (snap && Array.isArray(snap.messages) && !gotMessages) onMessages(snap.messages)
+    } catch (err) {
+      console.warn('[xiaoyin] 读取启动快照失败', err)
+    }
+    bindVoiceprint()
     bindResizeGrips()
     autoGrow()
     syncSendButton()

@@ -488,6 +488,72 @@ body {
   }
 }
 
+/* 正在思考：会话底部的一行占位，发出去到回复回来之前一直亮着。
+   标题栏胶囊太容易看漏，跑工具（打印、微信）十几秒时窗口看着就像卡死。 */
+.thinking {
+  display: none;
+  align-self: flex-start;
+  align-items: center;
+  gap: 7px;
+  margin: 1px 0 0 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1;
+  letter-spacing: 0.25px;
+  user-select: none;
+}
+
+.thinking.on {
+  display: inline-flex;
+  animation: thinking-in 0.18s ease-out;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+}
+
+.thinking-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--blue);
+  animation: thinking-dot 1.05s ease-in-out infinite;
+}
+
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes thinking-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes thinking-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* ---------------- 底部：电平 + 输入 ---------------- */
 
 .footer {
@@ -962,7 +1028,9 @@ textarea:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .dot,
-  .cursor {
+  .cursor,
+  .thinking,
+  .thinking-dots i {
     animation: none !important;
   }
   .status,
@@ -972,4 +1040,101 @@ textarea:focus-visible {
   .toast {
     transition: none;
   }
+}
+
+/* ---------------- 声纹面板 ---------------- */
+
+.vp {
+  position: absolute;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(8, 10, 14, 0.58);
+  border-radius: 18px;
+  -webkit-app-region: no-drag;
+  z-index: 5;
+}
+
+.vp[hidden] {
+  display: none;
+}
+
+.vp-card {
+  width: min(430px, 100%);
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: #1b1e25;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.vp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.vp-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.vp-text {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+}
+
+.vp-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.vp-actions .pill[hidden] {
+  display: none;
+}
+
+/* 录制中的实时计时：盖在面板里，用户才知道麦克风真的在收 */
+.vp-live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -4px 0 12px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vp-live[hidden] {
+  display: none;
+}
+
+.vp-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  animation: vp-live-pulse 1.2s ease-in-out infinite;
+}
+
+.vp-live-time {
+  color: #ff9a9a;
+  letter-spacing: 0.5px;
+}
+
+.vp-live-label {
+  color: var(--muted);
+}
+
+@keyframes vp-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
 }

@@ -27,6 +27,12 @@ const DEFAULT_NAME = '小印'
 
 const KWS_MODEL_DIR = path.join(REPO_DIR, 'models', 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01')
 const KWS_STEM = 'epoch-12-avg-2-chunk-16-left-64'
+const VOICEPRINT_MODEL = path.join(REPO_DIR, 'models', '3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx')
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, value))
+}
 
 function readJson(file) {
   try {
@@ -64,7 +70,8 @@ function splitWakeWords(value) {
  *   leaseFile: string, ownerInstance: string, ownerProduct: string,
  *   name: string, hotkey: string, wake: boolean, releaseMicWhenWakeOff: boolean, wakeWords: Array<{text: string, pinyin: string}>,
  *   maxSeconds: number, silenceSeconds: number, language: string, threads: number,
- *   asr: {model: string, tokens: string}, kws: {encoder: string, decoder: string, joiner: string, tokens: string, keywordsFile: string}
+ *   asr: {model: string, tokens: string}, kws: {encoder: string, decoder: string, joiner: string, tokens: string, keywordsFile: string},
+ *   voiceprint: {enabled: boolean, model: string, threshold: number, samples: number}
  * }}
  */
 function loadConfig() {
@@ -114,6 +121,14 @@ function loadConfig() {
     releaseMicWhenWakeOff: runtime.releaseMicWhenWakeOff === true,
     wakeWords,
     asr: { model, tokens },
+    // 声纹（说话人校验）：只判断「这句是不是机主」，见 lib/voiceprint.js。
+    // 模型缺失时整体降级成「不校验」，不影响唤醒/识别。
+    voiceprint: {
+      enabled: runtime.voiceprint !== false && raw.voiceprint !== false,
+      model: existing(process.env.XIAOYIN_VOICEPRINT_MODEL, VOICEPRINT_MODEL),
+      threshold: clamp(Number(runtime.voiceprintThreshold || raw.voiceprint_threshold || 0.5), 0.3, 0.95),
+      samples: 3,
+    },
     kws: {
       encoder: path.join(KWS_MODEL_DIR, `encoder-${KWS_STEM}.int8.onnx`),
       decoder: path.join(KWS_MODEL_DIR, `decoder-${KWS_STEM}.int8.onnx`),

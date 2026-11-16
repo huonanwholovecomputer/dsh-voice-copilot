@@ -16,6 +16,9 @@
  *   capture {phase: 'start'|'tick'|'end', ms, level}
  *   text    {text, wavPath, ms, source}
  *   empty   {reason}     没听清 / 没说话
+ *   voiceprint-rejected {score, threshold, reason}  这句不像机主，暂存等用户决定
+ *   enroll-progress {index, want, ok, error?}       声纹注册进度
+ *   enroll-done     {ok, selfCheck?, dim?, samples?, error?}
  *   error   {stage, message}
  */
 'use strict'
@@ -23,6 +26,8 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
+
+const { Voiceprint } = require('./voiceprint')
 
 const SAMPLE_RATE = 16000
 const FRAME = 320 // 20 ms
@@ -125,6 +130,11 @@ class VoiceLoop extends EventEmitter {
     this.capture = null // {source, chunks, samples, speechMs, startedAt, lastVoiceAt, prerollFrames}
     this._transcribing = false
     this.pendingKeywords = false
+
+    // 声纹（可选）：模型缺失/没注册时整条链路都当它不存在
+    this.voiceprint = null
+    this._rejected = null // 声纹没过、暂存等用户决定的那一句 {samples, verdict, at}
+    this._enroll = null // 注册中 {vectors, want, startedAt}
   }
 
   // ---------------------------------------------------------------- 引擎
@@ -133,6 +143,113 @@ class VoiceLoop extends EventEmitter {
     this._initSpotter()
     // 识别器创建要 1.3 s 左右，延后一点，别和窗口首帧抢时间
     setTimeout(() => this._initRecognizer(), 800)
+    // 声纹 0.9 s 左右，排在识别器后面，避免三套模型同时抢 CPU
+    setTimeout(() => this._initVoiceprint(), 1800)
+  }
+
+  _initVoiceprint() {
+    if (this.voiceprint) return true
+    const settings = this.config.voiceprint || {}
+    if (settings.enabled === false) {
+      this.log('声纹：配置里关掉了')
+      return false
+    }
+    if (!settings.model || !fs.existsSync(settings.model)) {
+      this.log(`声纹模型缺失，跳过校验：${settings.model || '(未配置)'}`)
+      return false
+    }
+    this.voiceprint = new Voiceprint({
+      model: settings.model,
+      dataDir: this.config.dataDir,
+      threshold: settings.threshold,
+      log: this.log,
+      sherpa: this.sherpa,
+    })
+    if (!this.voiceprint.init()) {
+      this.voiceprint = null
+      return false
+    }
+    // 有模板就提前读一次，省得第一句话多等一次磁盘
+    const status = this.voiceprint.status()
+    this.log(`声纹：${status.enrolled ? '已注册，唤醒后校验机主' : '未注册，先不校验'}`)
+    return true
+  }
+
+  /** 声纹状态（给浮窗显示）。 */
+  voiceprintStatus() {
+    if (!this.voiceprint) {
+      return { available: false, enabled: false, enrolled: false, threshold: 0, reason: '声纹模型未加载' }
+    }
+    return this.voiceprint.status()
+  }
+
+  /** 开始注册声纹：连录 want 句，录完自动求平均落盘。 */
+  startEnroll(want = 3) {
+    if (!this.voiceprint) return { ok: false, error: '声纹模型没加载（检查 models/ 下是否有 CAM++ 模型）' }
+    if (this.state === 'recording' || this._transcribing) return { ok: false, error: '正在处理上一句，稍等一下' }
+    const count = Math.max(1, Math.min(6, Number(want) || 3))
+    this._enroll = { vectors: [], want: count, startedAt: Date.now() }
+    this._rejected = null
+    this.beginCapture('enroll')
+    return { ok: true, want: count }
+  }
+
+  cancelEnroll() {
+    if (!this._enroll) return { ok: true }
+    if (this.state === 'recording') {
+      this._abortCapture('取消注册声纹', true)
+    } else {
+      this._enroll = null
+      this.emit('enroll-done', { ok: false, error: '取消注册声纹' })
+    }
+    return { ok: true }
+  }
+
+  /**
+   * 声纹没过、用户点「仍然发送」：把暂存的那一句照常识别发出去。
+   * 只保留最近一句，避免麦克风开着攒一堆别人的话。
+   */
+  async acceptRejected() {
+    const pending = this._rejected
+    if (!pending) return { ok: false, error: '没有等待中的那一句' }
+    this._rejected = null
+    this.state = 'busy'
+    try {
+      const text = await this._transcribe(pending.samples)
+      if (!text) {
+        this.state = this._idleState()
+        this.emit('empty', { reason: 'no-text' })
+        return { ok: false, error: '没听清' }
+      }
+      const wavPath = path.join(this.config.audioDir, `${Date.now()}.wav`)
+      writeWav(wavPath, pending.samples)
+      this.emit('text', {
+        text,
+        wavPath,
+        ms: Math.round((pending.samples.length / SAMPLE_RATE) * 1000),
+        source: 'voiceprint-override',
+      })
+      return { ok: true }
+    } catch (error) {
+      this.log(`识别失败：${error && error.stack ? error.stack : error}`)
+      this.emit('error', { stage: 'asr', message: '识别失败' })
+      return { ok: false, error: '识别失败' }
+    } finally {
+      this.state = this._idleState()
+    }
+  }
+
+  /** 丢掉「声纹没过」的那一句。 */
+  dropRejected() {
+    const had = Boolean(this._rejected)
+    this._rejected = null
+    return { ok: had }
+  }
+
+  /** 删掉已注册的声纹模板（下次唤醒不再校验）。 */
+  removeVoiceprint() {
+    if (!this.voiceprint) return { ok: false, error: '声纹模型没加载' }
+    return this.voiceprint.removeTemplate()
   }
 
   _initSpotter() {
@@ -332,6 +449,8 @@ class VoiceLoop extends EventEmitter {
   beginCapture(source) {
     if (this.state === 'recording') return false
     if (this._transcribing) return false
+    // 注册声纹时别让唤醒词/热键插进来抢这一段
+    if (this._enroll && source !== 'enroll') return false
     this.state = 'recording'
     const prerollMs = source === 'wake' ? PREROLL_WAKE_MS : PREROLL_HOTKEY_MS
     const preroll = this._tail(prerollMs / 1000)
@@ -389,6 +508,10 @@ class VoiceLoop extends EventEmitter {
     const had = this.capture && this.capture.hasSpeech
     this.capture = null
     this.state = this._idleState()
+    if (this._enroll) {
+      this._enroll = null
+      this.emit('enroll-done', { ok: false, error: '取消注册声纹' })
+    }
     this.emit('capture', { phase: 'end', ms: 0, level: 0, aborted: true })
     this.log(`录音取消：${reason}`)
     // 用户主动取消不是「没听清」，别弹错误提示
@@ -437,8 +560,36 @@ class VoiceLoop extends EventEmitter {
 
     if (capture.speechMs < MIN_SPEECH_MS) {
       this.state = this._idleState()
+      // 注册时这一句太短，当成「算不出声纹」再给一次机会，别把注册流程卡死
+      if (capture.source === 'enroll' && this._enroll) {
+        this._handleEnrollSample(null)
+        return
+      }
       this.emit('empty', { reason: 'too-short' })
       return
+    }
+
+    // 注册声纹时不识别，只算向量；连着录几句
+    if (capture.source === 'enroll') {
+      this._handleEnrollSample(samples)
+      return
+    }
+
+    // 声纹门禁：唤醒/热键收上来的整句先验机主，不像就先扣着等用户决定
+    if (this.voiceprint && this.voiceprint.enrolled) {
+      const verdict = this.voiceprint.verify(samples)
+      if (!verdict.ok) {
+        this._rejected = { samples, verdict, at: Date.now() }
+        this.state = this._idleState()
+        this.log(`声纹没过 score=${verdict.score.toFixed(3)} < ${verdict.threshold}`)
+        this.emit('voiceprint-rejected', {
+          score: Number(verdict.score.toFixed(3)),
+          threshold: verdict.threshold,
+          reason: verdict.reason || '',
+        })
+        return
+      }
+      this.log(`声纹通过 score=${verdict.score.toFixed(3)}`)
     }
 
     try {
@@ -457,6 +608,50 @@ class VoiceLoop extends EventEmitter {
     } finally {
       this.state = this._idleState()
       if (this.pendingKeywords) setTimeout(() => this.reloadKeywords(), 0)
+    }
+  }
+
+  /** 注册流程收一句：算向量、报进度，够数就平均落盘。 */
+  _handleEnrollSample(samples) {
+    const enroll = this._enroll
+    this.state = this._idleState()
+    if (!enroll) return
+    const vector = this.voiceprint ? this.voiceprint.embed(samples) : null
+    if (!vector) {
+      enroll.failures = (enroll.failures || 0) + 1
+      this.emit('enroll-progress', {
+        index: enroll.vectors.length,
+        want: enroll.want,
+        ok: false,
+        error: enroll.failures >= 3 ? '连续几句都算不出声纹，先退出重试' : '这句太短或太吵，再说一次',
+      })
+      if (enroll.failures >= 3) {
+        this._enroll = null
+        this.emit('enroll-done', { ok: false, error: '声纹样本不够，注册取消' })
+        return
+      }
+      setTimeout(() => {
+        if (this._enroll) this.beginCapture('enroll')
+      }, 350)
+      return
+    }
+
+    enroll.vectors.push(vector)
+    enroll.failures = 0
+    this.emit('enroll-progress', { index: enroll.vectors.length, want: enroll.want, ok: true })
+    if (enroll.vectors.length < enroll.want) {
+      setTimeout(() => {
+        if (this._enroll) this.beginCapture('enroll')
+      }, 400)
+      return
+    }
+
+    const result = this.voiceprint.saveTemplate(enroll.vectors)
+    this._enroll = null
+    if (result.ok) {
+      this.emit('enroll-done', { ok: true, selfCheck: result.selfCheck, dim: result.dim, samples: enroll.vectors.length })
+    } else {
+      this.emit('enroll-done', { ok: false, error: result.error })
     }
   }
 

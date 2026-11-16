@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('xiaoyin', {
   onState: (callback) => subscribe('xiaoyin:state', callback),
   onMessages: (callback) => subscribe('xiaoyin:messages', callback),
   onToast: (callback) => subscribe('xiaoyin:toast', callback),
+  // 页面挂好监听后要一次当前快照：history 可能比订阅先到，那几帧不能丢
+  snapshot: () => ipcRenderer.invoke('xiaoyin:snapshot'),
   send: (text) => ipcRenderer.invoke('xiaoyin:send', String(text ?? '')),
   hide: () => ipcRenderer.invoke('xiaoyin:hide'),
   // 拖把手改窗口尺寸（width/height 是想要的绝对像素，edge 决定哪条边跟着动）
@@ -25,6 +27,16 @@ contextBridge.exposeInMainWorld('xiaoyin', {
   setWake: (on) => ipcRenderer.invoke('xiaoyin:set-wake', Boolean(on)),
   cancel: () => ipcRenderer.invoke('xiaoyin:cancel'),
   stopRecording: () => ipcRenderer.invoke('xiaoyin:stop-recording'),
+  // 声纹：只认机主。status 给面板显示，enroll 连录 3 句，accept/drop 处理「不像你」的那句
+  voiceprint: {
+    status: () => ipcRenderer.invoke('xiaoyin:voiceprint-status'),
+    enroll: (want) => ipcRenderer.invoke('xiaoyin:voiceprint-enroll', Number(want) || 3),
+    cancel: () => ipcRenderer.invoke('xiaoyin:voiceprint-cancel'),
+    accept: () => ipcRenderer.invoke('xiaoyin:voiceprint-accept'),
+    drop: () => ipcRenderer.invoke('xiaoyin:voiceprint-drop'),
+    remove: () => ipcRenderer.invoke('xiaoyin:voiceprint-remove'),
+    onEvent: (callback) => subscribe('xiaoyin:voiceprint', callback),
+  },
   audio: {
     start: () => ipcRenderer.invoke('xiaoyin:audio-start'),
     stop: () => ipcRenderer.invoke('xiaoyin:audio-stop'),

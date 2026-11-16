@@ -129,9 +129,13 @@ function bumpMessage(message) {
   pushMessages()
 }
 
+function messageSnapshot() {
+  return messages.map((m) => ({ id: m.id, role: m.role, text: m.text, streaming: Boolean(m.streaming) }))
+}
+
 function pushMessages() {
   if (!windowRef) return
-  windowRef.send('xiaoyin:messages', messages.map((m) => ({ id: m.id, role: m.role, text: m.text, streaming: Boolean(m.streaming) })))
+  windowRef.send('xiaoyin:messages', messageSnapshot())
 }
 
 function pushState(patch) {
@@ -319,6 +323,8 @@ function handleEvent(event) {
       const last = messages[messages.length - 1]
       if (last && last.role === 'user' && last.text === text) return
       bumpMessage({ role: 'user', text })
+      // 在 DSH 主窗里打字发问也一样：等答复期间就是「思考中」
+      if (state.phase === 'sleeping' || state.phase === 'error') setPhase('thinking')
       return
     }
     case 'assistant-message': {
@@ -334,7 +340,15 @@ function handleEvent(event) {
     case 'reply-start':
       setPhase('replying')
       return
-    case 'done':
+    // 一步结束 ≠ 一轮结束：中间还夹着工具调用（打印、微信这些动辄十几秒），
+    // 这里回到「思考中」而不是睡觉，标题栏胶囊和会话里的「正在思考」才一直亮着。
+    case 'done': {
+      const lastDone = messages[messages.length - 1]
+      if (lastDone && lastDone.role === 'assistant') lastDone.streaming = false
+      pushMessages()
+      if (state.phase !== 'error') setPhase('thinking')
+      return
+    }
     case 'turn-end': {
       const last = messages[messages.length - 1]
       if (last && last.role === 'assistant') last.streaming = false
@@ -444,6 +458,25 @@ function wireVoiceLoop(voiceLoop) {
     log(`没听清：${reason}`)
     setPhase('error', { error: '没听清，再说一次？' })
     returnToSleeping(2500)
+  })
+
+  // 声纹没过：窗口留着，面板问用户「仍然发送 / 丢弃」
+  voiceLoop.on('voiceprint-rejected', (payload) => {
+    log(`声纹没过：score=${payload.score} threshold=${payload.threshold}${payload.reason ? ` (${payload.reason})` : ''}`)
+    showWindow()
+    setPhase('sleeping')
+    if (windowRef) windowRef.send('xiaoyin:voiceprint', { kind: 'rejected', ...payload })
+  })
+
+  voiceLoop.on('enroll-progress', (payload) => {
+    if (windowRef) windowRef.send('xiaoyin:voiceprint', { kind: 'enroll-progress', ...payload })
+  })
+
+  voiceLoop.on('enroll-done', (payload) => {
+    log(`声纹注册${payload.ok ? '完成' : '失败'}${payload.ok ? ` selfCheck=${payload.selfCheck}` : `：${payload.error}`}`)
+    if (windowRef) windowRef.send('xiaoyin:voiceprint', { kind: 'enroll-done', ...payload })
+    toast(payload.ok ? '声纹已注册，以后只认你的声音' : `声纹没注册上：${payload.error || '未知原因'}`, payload.ok ? 'info' : 'warn')
+    if (payload.ok) setPhase('sleeping')
   })
 
   voiceLoop.on('error', ({ stage, message }) => {
@@ -587,6 +620,9 @@ async function onReady() {
   watchRuntime()
 
   ipcMain.handle('xiaoyin:send', (_event, text) => ({ ok: submitTyped(text) }))
+  // 页面刚加载完时，history 可能比订阅先到（丢失的那一份就补不回来了）。
+  // 渲染进程挂好监听后主动要一次快照，窗口不会再空着。
+  ipcMain.handle('xiaoyin:snapshot', () => ({ state: { ...state }, messages: messageSnapshot() }))
   ipcMain.handle('xiaoyin:hide', () => {
     hideWindow()
     return { ok: true }
@@ -642,6 +678,41 @@ async function onReady() {
   ipcMain.handle('xiaoyin:audio-start', () => {
     log('渲染进程申请麦克风')
     return { ok: true, sampleRate: SAMPLE_RATE, device: '' }
+  })
+
+  // ---- 声纹：只认机主 ----
+  ipcMain.handle('xiaoyin:voiceprint-status', () => {
+    if (!loop) return { ok: true, available: false, enabled: false, enrolled: false, threshold: 0, reason: '语音环没起来' }
+    return { ok: true, ...loop.voiceprintStatus() }
+  })
+  ipcMain.handle('xiaoyin:voiceprint-enroll', (_event, want) => {
+    if (!loop) return { ok: false, error: '语音环没起来' }
+    showWindow()
+    const result = loop.startEnroll(Number(want) || 3)
+    if (result.ok) setPhase('recording', { recordingMs: 0 })
+    else toast(result.error || '没法开始录声纹', 'warn')
+    return result
+  })
+  ipcMain.handle('xiaoyin:voiceprint-cancel', () => ({ ok: true, ...(loop ? loop.cancelEnroll() : {}) }))
+  ipcMain.handle('xiaoyin:voiceprint-accept', async () => {
+    if (!loop) return { ok: false, error: '语音环没起来' }
+    const result = await loop.acceptRejected()
+    if (result.ok) toast('已按你的意思发出去', 'info')
+    setPhase(result.ok ? 'thinking' : 'sleeping')
+    if (windowRef) windowRef.send('xiaoyin:voiceprint', { kind: 'resolved' })
+    return result
+  })
+  ipcMain.handle('xiaoyin:voiceprint-drop', () => {
+    const result = loop ? loop.dropRejected() : { ok: false }
+    setPhase('sleeping')
+    if (windowRef) windowRef.send('xiaoyin:voiceprint', { kind: 'resolved' })
+    return result
+  })
+  ipcMain.handle('xiaoyin:voiceprint-remove', () => {
+    if (!loop) return { ok: false, error: '语音环没起来' }
+    const result = loop.removeVoiceprint()
+    if (result.ok) toast('声纹模板已删除', 'info')
+    return { ...result, ...loop.voiceprintStatus() }
   })
   ipcMain.handle('xiaoyin:audio-stop', () => {
     log('渲染进程释放麦克风')
