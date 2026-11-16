@@ -47,3 +47,4 @@ docs/订单文件来源_*.md
 
 # 本地备份文件（改桥/改工具前手工复制的 .bak-日期）
 *.bak-*
+tools/_ui_probe/*.png
