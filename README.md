@@ -57,7 +57,7 @@
 
 ## 数据目录（`dataDir`）
 
-默认 `%USERPROFILE%\.dsh\voice-copilot`，本机指到 `%USERPROFILE%/.dsh/voice-copilot`：
+默认 `%USERPROFILE%\.dsh\voice-copilot`（可在插件配置的 `dataDir` 改）：
 
 | 文件 | 谁写 | 干什么 |
 | --- | --- | --- |
