@@ -38,10 +38,11 @@ test('小印的 agent.json 能被加载成壳认识的形状', () => {
   assert.equal(agent.session.sessionTitle, '语音浮窗')
   assert.equal(agent.persona.kind, 'preset')
   assert.equal(agent.persona.preset, 'private-print-assistant')
-  assert.equal(agent.settings.ledgerDb.endsWith('ledger.db'), true)
+  // 仓库里的清单不带本机路径；真值由插件配置或环境变量注入
+  assert.equal(agent.settings.ledgerDb, '')
   assert.ok(agent.sidebar && agent.sidebar.module.endsWith(path.join('xiaoyin', 'sidebar.js')))
   // 业务示例在包里，壳里一个字都不该有
-  assert.match(agent.voiceNotes(), /张三/)
+  assert.match(agent.voiceNotes(), /张山/)
 })
 
 test('voiceNotes 按 mtime 热更新：改文件不用重启插件', async () => {

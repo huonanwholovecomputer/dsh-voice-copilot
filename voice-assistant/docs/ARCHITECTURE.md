@@ -35,7 +35,7 @@ P0（本次）已经把这条缝切出来了；P1/P2/P3 的计划也写在这里
 | --- | --- |
 | `agent.js` | 包加载器。纯 I/O + 校验，不依赖 DSH，可单测；`normalizeAgent()` 同时给 P1 的导入校验复用 |
 | `xiaoyin-persona/agents/xiaoyin/agent.json` | 小印的清单：称呼、`session.agentPreset`/`cwd`、`ledgerDb`、侧栏模块 |
-| `xiaoyin-persona/agents/xiaoyin/voice-notes.md` | 「怎么说话」里那条带人名/单号的例子——壳里不再出现「张三」 |
+| `xiaoyin-persona/agents/xiaoyin/voice-notes.md` | 「怎么说话」里那条带人名/单号的例子——壳里不再出现具体人名，示例统一用化名 |
 | `xiaoyin-persona/agents/xiaoyin/sidebar.js` | 台账白名单 5 条宿主路由，壳只负责 import 并递 web 上下文 |
 | `xiaoyin-persona/agents/xiaoyin/lib/ledger-groups.js`、`lib/whitelist-policy.js` | 原来在仓库根目录，现在跟着包走 |
 

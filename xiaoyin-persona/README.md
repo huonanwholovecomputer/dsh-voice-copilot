@@ -16,7 +16,7 @@
 
 ## `agents/xiaoyin/`
 
-`agent.json` 是清单：`id` / `name` / `persona` / `session`（`cwd`、`agentPreset`）/ `settings`（`ledgerDb`、`kbmonDir`）/ `sidebar.module` / `tools`。本机 `session.cwd` 与 `agentPreset` 指向 `presets/private-print-assistant`，`ledgerDb` 指向 `<台账项目>/var/ledger.db`，`kbmonDir` 指向 `<教务系统项目>`。
+`agent.json` 是清单：`id` / `name` / `persona` / `session`（`cwd`、`agentPreset`）/ `settings`（`ledgerDb`、`kbmonDir`）/ `sidebar.module` / `tools`。本机 `session.cwd` 与 `agentPreset` 指向 `presets/private-print-assistant`；`settings` 里的 `ledgerDb` / `kbmonDir` 这类本机路径**不写进仓库**，留空，由插件配置里同名两项（或环境变量 `DSH_VOICE_COPILOT_LEDGER_DB` / `DSH_VOICE_COPILOT_KBmon_DIR`）注入。
 
 - `sidebar.js`：侧栏「小印」页（群白名单、台账分组），由 `client.js` 在浏览器半侧挂载。
 - `lib/whitelist-policy.js`：白名单口径（按订单来源算 `chats.excluded`）。
@@ -30,7 +30,7 @@
 agent preset 不是插件：一条 `- insert:` 声明 + `@deepseek-ai/dsh-agent-preset` 的 `config`，里面挂人设（`@deepseek-ai/dsh-persona`）、工具与按需的 MCP 行。
 
 - **`example-assistant/`**：可公开的骨架（`@local/dsh-preset-example`）。装好之后把插件页「语音会话预设」填 `example-assistant`，语音会话就跑在这个模式里。改 id / 人设 / `plugins` 行就是自己的会话模式。
-- **`private-print-assistant/`**：本机私有（`@local/dsh-private-print-assistant`，gitignore）。persona 里写死了「你的家在 `<仓库>\xiaoyin-persona\presets\private-print-assistant`」、`EXPERIENCE.md` 路径与全部 `mcp__wechat-print-bridge__*` 工具；`EXPERIENCE.md` 是长期积累的业务经验（检索漏斗、身份判定、排错），`tests/acceptance.md` 是验收清单。
+- **`private-print-assistant/`**：本机私有（`@local/dsh-private-print-assistant`，gitignore）。persona 里写死了「你的家在 `<preset 目录绝对路径>`」、`EXPERIENCE.md` 路径与全部 `mcp__wechat-print-bridge__*` 工具；`EXPERIENCE.md` 是长期积累的业务经验（检索漏斗、身份判定、排错），`tests/acceptance.md` 是验收清单。
 
 安装（两个都一样）：
 
@@ -73,7 +73,7 @@ python xiaoyin-persona/tools/learning_report.py --days 14
 | `whitelist-strategy.mjs` | 白名单口径演算 |
 | `order-samples.jsonl` | 救回来的评测样本（84 条真实出单） |
 
-打印项目的 bridge 通过 `<台账项目>\bridge\config.py` 的 `funnel_tools_dir` 找到这个目录；搬动后要改那一行并重启 MCP 进程。
+打印项目的 bridge 通过 `<台账项目>/bridge/config.py` 的 `funnel_tools_dir` 找到这个目录；搬动后要改那一行并重启 MCP 进程。
 
 `local_config.example.py` 是模板，`local_config.py` 放真实路径，两者都在 gitignore/示例的位置上——新机器先复制再填。
 

@@ -26,7 +26,7 @@ xiaoyin-persona/learning/
   "startedAt": 1792138057704,   // 毫秒时间戳
   "endedAt": 1792138068120,
   "durationMs": 10416,
-  "cwd": "D:\\打印机项目",
+  "cwd": "<工作目录>",
   "preset": "private-print-assistant",
   "model": "deepseek-v4.1-flash",
   "user": "帮我把申请表打两份",   // 已脱敏、已截断
@@ -61,7 +61,7 @@ xiaoyin-persona/learning/
 ```jsonc
 { "v": 1, "id": "note-…", "at": 1792138068120, "kind": "problem",
   "severity": "high", "title": "打印机偶发离线", "detail": "…",
-  "sessionId": "…", "turn": 3, "cwd": "D:\\打印机项目" }
+  "sessionId": "…", "turn": 3, "cwd": "<工作目录>" }
 ```
 
 ## 它是怎么产生的（实现要点）
@@ -145,7 +145,7 @@ xiaoyin-persona/learning/
 
 | 数据源 | 有什么 | 为什么可信 |
 | --- | --- | --- |
-| 打印机日志 `%APPDATA%\HN打印工具\logs\*.log` | 每一单「出纸了、打的是哪几个文件、几张纸、单面还是双面」 | 这是**已经发生的事实**，不是模型猜的 |
+| 打印机日志 `%APPDATA%\<打印工具>\logs\*.log` | 每一单「出纸了、打的是哪几个文件、几张纸、单面还是双面」 | 这是**已经发生的事实**，不是模型猜的 |
 | 台账 `var\ledger.db` 的 `file_msgs` | 同一批文件「是谁、什么时候发的、前后聊了什么」 | 顾客原话就嵌在 `context` 里 |
 
 两边按「文件名 + 时间窗」对齐，就能**自动造出 (顾客原话 → 正确文件) 的样本**，
@@ -235,7 +235,7 @@ T3 明令禁止的原因很具体：**社团群是全校混编**。有位同学�
 
 ### 接进 MCP 的位置
 
-`…/WeChatDataAnalysis研究/bridge/mcp_server.py` 的 `_tool_wechat_file_search`
+`<台账项目>/bridge/mcp_server.py` 的 `_tool_wechat_file_search`
 在 `q` 非空且 `smart` 不为 false 时，会先调 `funnel.lookup()` 拿一个**相关度顺序**
 （`_funnel_order()`），再按 message_id 回台账取行——顺序用 funnel 的，行用台账的，
 两边永远同源。`funnel` 不存在或 import 失败时自动退回纯台账 AND LIKE，工具不会挂。

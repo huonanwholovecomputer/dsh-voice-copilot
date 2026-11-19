@@ -30,7 +30,7 @@ function dayFixture(overrides = {}) {
     part: '全天',
     courses: [
       { part: '上午', period: '1-2节', periods: '1-2', time: '', course: '数据结构与算法设计', teacher: '王老师', room: 'A101', building: '综合楼', weeks: '1-5周', kind_name: '理论' },
-      { part: '下午', period: '5-6节', periods: '5-6', time: '', course: '大学英语3', teacher: '李老师', room: 'F#208', building: '综合楼', weeks: '1-16周', kind_name: '理论' },
+      { part: '下午', period: '5-6节', periods: '5-6', time: '', course: '大学英语3', teacher: '李老师', room: 'B203', building: '综合楼', weeks: '1-16周', kind_name: '理论' },
     ],
     ...overrides,
   }
@@ -89,7 +89,7 @@ test('formatDay：有课时给出结论 + 明细', () => {
   assert.equal(out.stale, false)
   assert.match(out.text, /^明天 11月19日（周四，第 13 周）·2 门课/)
   assert.match(out.text, /· 上午 1-2节 数据结构与算法设计｜王老师｜A101/)
-  assert.match(out.text, /· 下午 5-6节 大学英语3｜李老师｜F#208/)
+  assert.match(out.text, /· 下午 5-6节 大学英语3｜李老师｜B203/)
   assert.match(out.say, /^明天有 2 门课/)
   assert.match(out.say, /数据结构与算法设计（王老师，A101）/)
 })
