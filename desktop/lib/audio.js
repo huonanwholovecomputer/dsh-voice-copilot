@@ -28,6 +28,7 @@ const path = require('node:path')
 const { EventEmitter } = require('node:events')
 
 const { Voiceprint } = require('./voiceprint')
+const { OwnerEndpoint } = require('./endpoint')
 
 const SAMPLE_RATE = 16000
 const FRAME = 320 // 20 ms
@@ -128,6 +129,7 @@ class VoiceLoop extends EventEmitter {
     this.lastTickAt = 0
 
     this.capture = null // {source, chunks, samples, speechMs, startedAt, lastVoiceAt, prerollFrames}
+    this.endpoint = null // 这一句的端点判定（见 lib/endpoint.js）
     this._transcribing = false
     this.pendingKeywords = false
 
@@ -463,8 +465,29 @@ class VoiceLoop extends EventEmitter {
       lastVoiceAt: 0,
       hasSpeech: false,
     }
+    this.endpoint = this._createEndpoint()
+    // 预录也算这一句的开头，端点里的时间和 capture.samples 才对得上（裁剪点按采样数算）
+    if (preroll.length) this.endpoint.push(preroll)
     this.emit('capture', { phase: 'start', ms: 0, level: this.level, source })
     return true
+  }
+
+  /**
+   * 这一句的端点判定。声纹可用、并且用户在设置里没关掉时，由它判断「哪几段是机主」；
+   * 否则传 null 声纹，整条逻辑退化成旧行为（任何有声都算机主、不裁剪）。
+   */
+  _createEndpoint() {
+    const settings = this.config.voiceprint || {}
+    const usable = Boolean(this.voiceprint && this.voiceprint.enrolled && settings.ownerGate !== false)
+    return new OwnerEndpoint({
+      sampleRate: SAMPLE_RATE,
+      speechRms: SPEECH_RMS,
+      silenceMs: this.config.silenceSeconds * 1000,
+      maxMs: this.config.maxSeconds * 1000,
+      noSpeechMs: NO_SPEECH_TIMEOUT_MS,
+      voiceprint: usable ? this.voiceprint : null,
+      log: (line) => this.log(`端点 ${line}`),
+    })
   }
 
   _feedCapture(chunk) {
@@ -483,18 +506,22 @@ class VoiceLoop extends EventEmitter {
       capture.lastVoiceAt = Date.now()
     }
 
+    // 收尾交给端点：只有「机主」的段才刷新计时。旁边人一直说，录音也会在机主停下
+    // silenceSeconds 后结束，而不是一路录到 maxSeconds。
+    const decision = this.endpoint ? this.endpoint.push(chunk) : null
+
     const now = Date.now()
     if (now - this.lastTickAt >= 100) {
       this.lastTickAt = now
       this.emit('capture', { phase: 'tick', ms: Math.round(durationMs), level: this.level })
     }
 
-    const isOverlong = durationMs >= this.config.maxSeconds * 1000
-    const isDone = capture.hasSpeech && capture.speechMs >= MIN_SPEECH_MS && now - capture.lastVoiceAt >= this.config.silenceSeconds * 1000
-    const isSilent = !capture.hasSpeech && now - capture.startedAt >= NO_SPEECH_TIMEOUT_MS
-
-    if (isDone || isOverlong) void this._finishCapture(isOverlong ? 'max-length' : 'silence')
-    else if (isSilent) this._abortCapture('没听到声音')
+    if (!decision) return
+    if (decision.reason === 'no-speech') {
+      this._abortCapture('没听到声音')
+      return
+    }
+    void this._finishCapture(decision.reason, { trimSamples: decision.trimSamples })
   }
 
   _appendToCapture(chunk) {
@@ -507,6 +534,7 @@ class VoiceLoop extends EventEmitter {
     if (this.state !== 'recording') return
     const had = this.capture && this.capture.hasSpeech
     this.capture = null
+    this.endpoint = null
     this.state = this._idleState()
     if (this._enroll) {
       this._enroll = null
@@ -538,25 +566,40 @@ class VoiceLoop extends EventEmitter {
       this._abortCapture('用户停止（没说话）', true)
       return true
     }
-    void this._finishCapture('manual')
+    // 手动停止也要走端点的裁剪判定：机主按停之前那段「旁边人的话」同样要剪掉
+    const decision = this.endpoint ? this.endpoint.finish('manual') : null
+    void this._finishCapture('manual', { trimSamples: decision ? decision.trimSamples : 0 })
     return true
   }
 
-  async _finishCapture(reason) {
+  /**
+   * @param {string} reason silence | max-length | manual | ...
+   * @param {{trimSamples?: number}} [options] 端点判定「尾部是旁人」时给出的裁剪点
+   */
+  async _finishCapture(reason, options = {}) {
     const capture = this.capture
     if (!capture) return
     this.capture = null
+    this.endpoint = null
     this.state = 'busy'
     const durationMs = Math.round((capture.samples / SAMPLE_RATE) * 1000)
     this.emit('capture', { phase: 'end', ms: durationMs, level: 0 })
 
-    const samples = new Float32Array(capture.samples)
+    let samples = new Float32Array(capture.samples)
     let offset = 0
     for (const chunk of capture.chunks) {
       samples.set(chunk, offset)
       offset += chunk.length
     }
     this.log(`一段结束 reason=${reason} 时长=${durationMs}ms 采样=${samples.length}`)
+
+    const trim = Math.max(0, Math.round(Number(options.trimSamples) || 0))
+    if (trim > 0 && trim < samples.length) {
+      const dropped = ((samples.length - trim) / SAMPLE_RATE).toFixed(2)
+      samples = samples.slice(0, trim)
+      this.log(`端点裁剪：去掉尾部 ${dropped}s（旁边人的话）`)
+    }
+    const finalMs = Math.round((samples.length / SAMPLE_RATE) * 1000)
 
     if (capture.speechMs < MIN_SPEECH_MS) {
       this.state = this._idleState()
@@ -577,9 +620,21 @@ class VoiceLoop extends EventEmitter {
 
     // 声纹门禁：唤醒/热键收上来的整句先验机主，不像就先扣着等用户决定
     if (this.voiceprint && this.voiceprint.enrolled) {
-      const verdict = this.voiceprint.verify(samples)
+      let verdict = this.voiceprint.verify(samples)
+      if (!verdict.ok && verdict.enrolled) {
+        // 整句平均分会被尾部噪声/别人的低语稀释：2026-11-19 10:28:34 机主自己那句
+        // 整句 0.460 被拒（要重说一遍），但滑窗最好的一段是 0.524。整句不过再看最好窗。
+        const best = this.voiceprint.bestScore(samples)
+        if (best && best.score >= verdict.threshold) {
+          this.log(
+            `声纹整句 ${verdict.score.toFixed(3)} 未过，最好窗 ${best.score.toFixed(3)}@${best.atMs}ms 过`,
+          )
+          verdict = { ...verdict, ok: true, score: best.score, reason: 'best-window' }
+        }
+      }
       if (!verdict.ok) {
         this._rejected = { samples, verdict, at: Date.now() }
+        this._saveRejected(samples, verdict)
         this.state = this._idleState()
         this.log(`声纹没过 score=${verdict.score.toFixed(3)} < ${verdict.threshold}`)
         this.emit('voiceprint-rejected', {
@@ -601,13 +656,30 @@ class VoiceLoop extends EventEmitter {
       }
       const wavPath = path.join(this.config.audioDir, `${Date.now()}.wav`)
       writeWav(wavPath, samples)
-      this.emit('text', { text, wavPath, ms: durationMs, source: capture.source })
+      this.emit('text', { text, wavPath, ms: finalMs, source: capture.source })
     } catch (error) {
       this.log(`识别失败：${error && error.stack ? error.stack : error}`)
       this.emit('error', { stage: 'asr', message: '识别失败' })
     } finally {
       this.state = this._idleState()
       if (this.pendingKeywords) setTimeout(() => this.reloadKeywords(), 0)
+    }
+  }
+
+  /**
+   * 门禁没过的录音也留一份：调阈值/查误拒时得能听回原音，
+   * 以前只有内存里那一份，界面一关日志里就只剩一个分数。
+   */
+  _saveRejected(samples, verdict) {
+    try {
+      const dir = path.join(this.config.audioDir, 'rejected')
+      fs.mkdirSync(dir, { recursive: true })
+      const score = Number(verdict && verdict.score ? verdict.score : 0).toFixed(3)
+      const file = path.join(dir, `${Date.now()}-${score}.wav`)
+      writeWav(file, samples)
+      this.log(`被拒录音已存档 ${file}`)
+    } catch (error) {
+      this.log(`归档被拒录音失败：${error && error.message ? error.message : error}`)
     }
   }
 

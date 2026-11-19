@@ -17,6 +17,7 @@
   },
   "settings": {
     "ledgerDb": "<台账项目>/var/ledger.db",
+    "kbmonDir": "<教务系统项目>",
     "printerLogDir": ""
   },
   "sidebar": {

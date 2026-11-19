@@ -40,6 +40,8 @@ import {
   requestTakeover,
 } from './lease.js'
 import { createLearning } from './learning.js'
+import { createCourses } from './courses.js'
+import { createNameResolver } from './name-resolver.js'
 import { createPinyinTool } from './pinyin-match.js'
 
 // 只把会话控制器当硬依赖；语音服务按需取，拿不到就退回「文字先通」，
@@ -95,6 +97,11 @@ export const Config = z.object({
     .default(0.5)
     .description('声纹通过阈值（余弦相似度）；越高越严，太低会认错人')
     .volatile(),
+  voiceprintOwnerGate: z
+    .boolean()
+    .default(true)
+    .description('多人环境：只有你的声音才刷新收尾计时，旁边人插话不算数、收尾后剪掉；关掉退回「任何人说话都算」')
+    .volatile(),
   language: z.string().default('zh').description('SenseVoice 识别语言').volatile(),
   learning: z.boolean().default(true).description('记录每轮思考、工具调用与回复，供离线复盘').volatile(),
   learningDir: z.string().default('').description('学习记录目录，默认 <dataDir>/learning；可指向本仓库 learning/').volatile(),
@@ -103,6 +110,12 @@ export const Config = z.object({
   learningToolResultChars: z.number().min(100).max(20000).default(1500).description('单条工具结果最多保留的字符数').volatile(),
   learningRedact: z.boolean().default(true).description('落盘前打码手机号、身份证号与 wxid').volatile(),
   ledgerDb: z.string().default('').description('微信文件台账 ledger.db 的绝对路径；「小印」管理页的群白名单从这里读写').volatile(),
+  kbmonDir: z
+    .string()
+    .default('')
+    .description('教务监视器（kbmon）所在目录；填了才让 voice_courses 查课表。留空则用智能体包里的 kbmonDir')
+    .volatile(),
+  pythonExe: z.string().default('').description('高级：跑 kbmon 用的 python 解释器；留空用 PATH 上的 python').volatile(),
   printerLogDir: z.string().default('').description('打印机日志目录（订单来源分析用）；留空则用 %APPDATA%\\HN打印工具\\logs').volatile(),
 })
 
@@ -227,6 +240,9 @@ export function apply(ctx, config = {}) {
   const currentPreset = () => liveText('agentPreset', '') || (agent && agent.session.agentPreset) || 'standard'
   const currentLedgerDb = () => liveText('ledgerDb', '') || agentSetting('ledgerDb') || process.env.DSH_VOICE_COPILOT_LEDGER_DB || ''
   const currentPrinterLogDir = () => liveText('printerLogDir', '') || agentSetting('printerLogDir') || process.env.DSH_VOICE_COPILOT_PRINTER_LOG_DIR || ''
+  // 课表：kbmon 是个 Python 小工具，只有目录能配（解释器一般就是 PATH 上的 python）。
+  const currentKbmonDir = () => liveText('kbmonDir', '') || agentSetting('kbmonDir') || process.env.DSH_VOICE_COPILOT_KBmon_DIR || ''
+  const currentPythonExe = () => liveText('pythonExe', '') || process.env.DSH_VOICE_COPILOT_PYTHON || ''
 
   // 学习记录：默认开，落 dataDir/learning；本机把它指到仓库 learning/，这样在这个工作目录里
   // 直接读原始记录就能复盘。isHuman/isNoise 延迟引用（它们定义在后面），只在真正收到事件时才调用。
@@ -273,6 +289,7 @@ export function apply(ctx, config = {}) {
     maxSeconds: liveNumber('maxSeconds', 20),
     voiceprint: liveBool('voiceprint', true),
     voiceprintThreshold: liveNumber('voiceprintThreshold', 0.5),
+    voiceprintOwnerGate: liveBool('voiceprintOwnerGate', true),
     language: liveText('language', '') || 'zh',
   })
   let runtimeJson = ''
@@ -511,11 +528,18 @@ export function apply(ctx, config = {}) {
     }
     lines.push(
       '',
-      '【听错的名字】语音转写经常出现同音错字，人名尤其容易（例如「张山」被写成「张三」）。',
-      '按字面查不到人时别急着说没有：先取一份候选名单（联系人、群成员、最近聊天里的人），连同听到的名字交给 voice_pinyin（action=match）按拼音做模糊比对；也可以直接传首字母缩写（如 ZW）。',
-      '匹配分接近或候选不止一个时，挑最像的一个（最多两个）去问用户「是不是他」，不要把整份名单摆出来让他挑；确认过的名字再用工具去查。',
+      '【听错的名字】语音转写经常出现同音错字，人名尤其容易（例如「拓亦乐」被写成「他一乐」、「皇甫韩心」被写成「黄虎」）。',
+      '只要用户提到一个人名而你不确定是谁——哪怕还没去查过、字面根本搜不到——都把那个词原样交给 voice_who（heard=那个词，context=用户这半句原话），不要先反问用户，也不要自己列候选名单：它一次就取好联系人、按声母/韵母模糊匹配、再结合最近说话和发文件给出结论。',
+      '它返回 decision=confident 就直接按那个人去做事，不用回头再确认；decision=ask 就把它的 say 说给用户（最多两个名字）；decision=none 才说没找到像的。',
+      '用户确认了到底是谁之后，调用 voice_who(action=confirm, heard=听到的原话, username=…)，下次同样的听错就会直接命中。',
+      '只有 voice_who 本身不可用（ok=false）时，才退回 voice_pinyin（action=match）自己拿名单比对。',
       '',
       '【换话题】用户说「开个新话题」「重开一段」「换个话题」时，调用 voice_new_session（可带一个简短的 title），然后只回一句「好，下一句进新的一段」。别自己猜会话 id，也别长篇解释旧会话怎么了。',
+      '',
+      '【课表】用户问「今天/明天有什么课」「下午有课吗」「这周几上什么」时，直接调 voice_courses：when 原样给用户说的那个词（明天/周三/11月27日，留空就是今天），时段放进 part。别自己推算日期、第几周或星期几。',
+      '它返回的 text 是明细（节次、课程、老师、教室），say 是已经组织好的口语结论：按需简短回答，别把整张表念一遍，也别报工具名。',
+      '它一次只答一天：用户问「这周/下周的课」就按他真正关心的那一两天分开问，别一口气把七天都查一遍；也可以直说可以一天一天问。',
+      '返回 stale=true 说明课表监视器很久没成功检查过（快照可能旧），回答末尾带一句「课表监视器 X 之后就没查过，可能有新调课」；它只读本地快照、不联网，ok=false 就直说查不到，不要自己去开教务系统。',
     )
     return lines.join('\n')
   }
@@ -1023,6 +1047,17 @@ export function apply(ctx, config = {}) {
     toolCtx.effect(() => toolCtx.tools.register(createPinyinTool(), {
       when: () => voiceTurn > 0,
     }), 'dsh-voice-copilot: voice_pinyin')
+    // 一步到位版：自己取联系人 + 最近会话，听完直接给结论，不再让模型先列名单。
+    // 只读本机微信数据（实时接口 / 台账），识别不出来也不会打断语音链路。
+    const whoResolver = createNameResolver({ ledgerDb: currentLedgerDb, log })
+    toolCtx.effect(() => toolCtx.tools.register(whoResolver.tool(), {
+      when: () => voiceTurn > 0,
+    }), 'dsh-voice-copilot: voice_who')
+    // 课表：问「明天有什么课」时直接读本机 kbmon 的本地快照（不联网、不触发检查）。
+    const courses = createCourses({ dir: currentKbmonDir, python: currentPythonExe, log })
+    toolCtx.effect(() => toolCtx.tools.register(courses.tool(), {
+      when: () => voiceTurn > 0,
+    }), 'dsh-voice-copilot: voice_courses')
     // 开一段新的：同样是「小印这轮在跑」时才可见。
     toolCtx.effect(() => toolCtx.tools.register(newSessionTool(), {
       when: () => voiceTurn > 0,

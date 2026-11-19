@@ -237,6 +237,42 @@ class Voiceprint {
     return { enrolled: true, score, threshold: limit, ok: decide(score, limit) }
   }
 
+  /**
+   * 整句平均分最容易被尾部的噪声/别人说话稀释：机主说 1.2 s、后面跟 1.8 s 杂音，
+   * 整句就只有 0.46（2026-11-19 真实误拒），但最好的一段窗还有 0.52。
+   * 这里滑窗挑最高的一个窗，给「整句没过时再给一次机会」用。
+   * @param {Float32Array} samples
+   * @param {{winMs?: number, hopMs?: number}} [options]
+   * @returns {null|{score: number, atMs: number, winMs: number}}
+   */
+  bestScore(samples, options = {}) {
+    const template = this.readTemplate()
+    if (!template) return null
+    const winMs = Math.max(300, Number(options.winMs) || 1500)
+    const hopMs = Math.max(100, Number(options.hopMs) || 500)
+    const win = Math.round((winMs / 1000) * 16000)
+    const hop = Math.round((hopMs / 1000) * 16000)
+    if (!samples || samples.length < win) {
+      if (!samples || samples.length < 16000 * 0.3) return null
+      const vector = this.embed(samples)
+      if (!vector) return null
+      return { score: cosine(vector, template.vector), atMs: Math.round((samples.length / 16000) * 1000), winMs }
+    }
+    let best = -1
+    let atMs = 0
+    for (let start = 0; start + win <= samples.length; start += hop) {
+      const vector = this.embed(samples.subarray(start, start + win))
+      if (!vector) continue
+      const score = cosine(vector, template.vector)
+      if (score > best) {
+        best = score
+        atMs = Math.round(((start + win) / 16000) * 1000)
+      }
+    }
+    if (best < 0) return null
+    return { score: best, atMs, winMs }
+  }
+
   /** 注册流程要录几句。 */
   static get enrollSamples() {
     return ENROLL_SAMPLES

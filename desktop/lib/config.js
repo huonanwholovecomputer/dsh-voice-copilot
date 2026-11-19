@@ -71,7 +71,7 @@ function splitWakeWords(value) {
  *   name: string, hotkey: string, wake: boolean, releaseMicWhenWakeOff: boolean, wakeWords: Array<{text: string, pinyin: string}>,
  *   maxSeconds: number, silenceSeconds: number, language: string, threads: number,
  *   asr: {model: string, tokens: string}, kws: {encoder: string, decoder: string, joiner: string, tokens: string, keywordsFile: string},
- *   voiceprint: {enabled: boolean, model: string, threshold: number, samples: number}
+ *   voiceprint: {enabled: boolean, model: string, threshold: number, samples: number, ownerGate: boolean}
  * }}
  */
 function loadConfig() {
@@ -128,6 +128,9 @@ function loadConfig() {
       model: existing(process.env.XIAOYIN_VOICEPRINT_MODEL, VOICEPRINT_MODEL),
       threshold: clamp(Number(runtime.voiceprintThreshold || raw.voiceprint_threshold || 0.5), 0.3, 0.95),
       samples: 3,
+      // 多人环境优化：只有机主的声音刷新收尾计时，旁边人插话不算（见 lib/endpoint.js）。
+      // 关掉就完全退回旧行为；没注册声纹时本来也不生效。
+      ownerGate: runtime.voiceprintOwnerGate !== false,
     },
     kws: {
       encoder: path.join(KWS_MODEL_DIR, `encoder-${KWS_STEM}.int8.onnx`),

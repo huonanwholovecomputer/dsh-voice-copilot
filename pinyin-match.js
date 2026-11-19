@@ -125,36 +125,177 @@ function editDistance(a, b) {
   return prev[n]
 }
 
-/** 两个音节有多像：完全相同 1；hu vs fu 差 1 个字母 → 0.5。 */
-function syllableSim(a, b) {
+/**
+ * 声母/韵母的「听起来像」归类。
+ *
+ * 纯字母编辑距离会把 hu vs fu 判成 0.5，可这两个在电话、语音里几乎是同一个：
+ * f/h 不分、n/l 不分是南方口音的标配，平翘舌（z/zh、c/ch、s/sh）更是转写重灾区。
+ * 所以先把声母、韵母各自映射到「混淆类」，同一类直接给高分，跨类才退回字母距离。
+ * 韵母同理：an/ang、en/eng、in/ing 这类前后鼻音只差鼻音位，但经常整类听混。
+ *
+ * 数值来自实机核对（他一乐 → 拓亦乐 0.833、马洪陶 → 马宏涛 1.0 等），改动要重跑
+ * test/name-resolver.test.mjs 与 test/pinyin-match.test.mjs。
+ */
+const INITIAL_GROUPS = [
+  ['zh', 'z', 'j'],
+  ['ch', 'c', 'q'],
+  ['sh', 's', 'x'],
+  ['n', 'l'],
+  ['f', 'h'],
+  ['r', 'l'],
+]
+const FINAL_GROUPS = [
+  ['an', 'ang'],
+  ['en', 'eng'],
+  ['in', 'ing'],
+  ['ian', 'iang'],
+  ['uan', 'uang'],
+  ['eng', 'ong'],
+  ['o', 'uo'],
+  ['ei', 'ie'],
+]
+
+function groupMap(groups) {
+  const map = new Map()
+  groups.forEach((members, index) => {
+    for (const member of members) {
+      if (!map.has(member)) map.set(member, new Set())
+      map.get(member).add(index)
+    }
+  })
+  return map
+}
+
+const INITIAL_GROUP = groupMap(INITIAL_GROUPS)
+const FINAL_GROUP = groupMap(FINAL_GROUPS)
+
+function sameGroup(map, a, b) {
+  const left = map.get(a)
+  const right = map.get(b)
+  if (!left || !right) return false
+  for (const id of left) if (right.has(id)) return true
+  return false
+}
+
+/** 声母像不像：同组 0.72；没声母（安/爱）听成 h 之类给 0.3；其余按字母。 */
+export function initialSimilarity(a, b) {
+  if (a === b) return 1
+  if (!a || !b) return 0.3
+  if (sameGroup(INITIAL_GROUP, a, b)) return 0.72
+  return Math.max(0, 1 - editDistance(a, b) / Math.max(a.length, b.length)) * 0.85
+}
+
+/** 韵母像不像：同组 0.82；一个是另一个的前缀（u vs ua）说明只少听了一点，兜到 0.7。 */
+export function finalSimilarity(a, b) {
+  if (a === b) return 1
+  if (!a || !b) return 0
+  if (sameGroup(FINAL_GROUP, a, b)) return 0.82
+  const base = Math.max(0, 1 - editDistance(a, b) / Math.max(a.length, b.length))
+  if (a.startsWith(b) || b.startsWith(a)) return Math.max(base, 0.7)
+  return base
+}
+
+/** 两个音节有多像：hu vs fu → 0.86；tuo vs ta → 0.5（声母对上了、韵母完全不对）。 */
+export function syllableSimilarity(a, b) {
   if (!a || !b) return 0
   if (a === b) return 1
-  const length = Math.max(a.length, b.length)
-  return Math.max(0, 1 - editDistance(a, b) / length)
+  const left = splitInitial(a)
+  const right = splitInitial(b)
+  return 0.5 * initialSimilarity(left.initial, right.initial)
+    + 0.5 * finalSimilarity(left.final, right.final)
 }
 
 /**
- * 在候选里找「听到的这一串音节」最像的一段连续区间，返回平均相似度。
- * 候选可以比听到的长（只听清「李」，候选可以是「李福生」），但更短时按重叠比例打折。
+ * 允许「中间漏听一个字」的对齐（拓乐 ↔ 拓亦乐、尹龙 ↔ 尹建龙）。
+ *
+ * 连续窗口对漏字无能为力：听成「拓乐」时窗口只能盖住「拓弈」或「弈乐」，两段都不像。
+ * 这里改成带惩罚的子序列对齐：跳过一个候选音节扣 0.35 分，名字开头的部分（班级前缀
+ * 「软工2301」）不算跳过、不扣分。只在 heard 比候选短时才有意义，其余情况返回 null。
  */
-function phoneticScore(heard, candidate) {
-  if (!heard.length || !candidate.length) return 0
-  if (candidate.length < heard.length) {
+function gappedAlignment(heard, candidate, penalty = 0.35) {
+  const m = heard.length
+  const n = candidate.length
+  if (m < 2 || n <= m) return null
+  const dp = Array.from({ length: m }, () => new Array(n).fill(-Infinity))
+  const from = Array.from({ length: m }, () => new Array(n).fill(-1))
+  for (let j = 0; j < n; j++) dp[0][j] = syllableSimilarity(heard[0], candidate[j])
+  for (let i = 1; i < m; i++) {
+    for (let j = i; j < n; j++) {
+      let best = -Infinity
+      let bestPrev = -1
+      for (let k = i - 1; k < j; k++) {
+        if (dp[i - 1][k] === -Infinity) continue
+        const value = dp[i - 1][k] - penalty * (j - k - 1)
+        if (value > best) {
+          best = value
+          bestPrev = k
+        }
+      }
+      if (bestPrev < 0) continue
+      dp[i][j] = best + syllableSimilarity(heard[i], candidate[j])
+      from[i][j] = bestPrev
+    }
+  }
+  let bestValue = -Infinity
+  let bestJ = -1
+  for (let j = 0; j < n; j++) {
+    if (dp[m - 1][j] > bestValue) {
+      bestValue = dp[m - 1][j]
+      bestJ = j
+    }
+  }
+  if (bestJ < 0 || !Number.isFinite(bestValue)) return null
+  let first = bestJ
+  let index = m - 1
+  let cursor = bestJ
+  while (index > 0) {
+    cursor = from[index][cursor]
+    index -= 1
+    first = cursor
+  }
+  return { score: Math.max(0, bestValue) / m, start: first, length: bestJ - first + 1 }
+}
+
+/**
+ * 在候选里找「听到的这一串音节」最像的一段连续区间。
+ * 候选可以比听到的长（只听清「李」，候选可以是「李福生」），但更短时按重叠比例打折。
+ * 返回的 start/length 用来告诉用户「是哪几个字对上了」。
+ * @param {string[]} heard 听到的音节（无声调）
+ * @param {string[]} candidate 候选名字的音节（无声调）
+ */
+export function bestWindow(heard, candidate) {
+  if (!heard.length || !candidate.length) return { score: 0, start: -1, length: 0 }
+  if (candidate.length <= heard.length) {
     let sum = 0
     for (let index = 0; index < candidate.length; index++) {
-      sum += syllableSim(heard[index].syllable, candidate[index].syllable)
+      sum += syllableSimilarity(heard[index], candidate[index])
     }
-    return (sum / candidate.length) * (candidate.length / heard.length)
+    return { score: (sum / candidate.length) * (candidate.length / heard.length), start: 0, length: candidate.length }
   }
-  let best = 0
+  let best = { score: 0, start: -1, length: heard.length }
   for (let start = 0; start + heard.length <= candidate.length; start++) {
     let sum = 0
     for (let index = 0; index < heard.length; index++) {
-      sum += syllableSim(heard[index].syllable, candidate[start + index].syllable)
+      sum += syllableSimilarity(heard[index], candidate[start + index])
     }
-    best = Math.max(best, sum / heard.length)
+    const score = sum / heard.length
+    if (score > best.score) best = { score, start, length: heard.length }
   }
+  const gapped = gappedAlignment(heard, candidate)
+  if (gapped && gapped.score > best.score) return gapped
   return best
+}
+
+/** 音节数组版：bestWindow 的分数。 */
+export function syllableWindowScore(heard, candidate) {
+  return bestWindow(heard, candidate).score
+}
+
+function phoneticScore(heard, candidate) {
+  return syllableWindowScore(
+    heard.map((item) => item.syllable),
+    candidate.map((item) => item.syllable),
+  )
 }
 
 /** 首字母逐位对齐：lh vs lfsh 在开头对齐时 l=l、h≠f → 0.5。 */
@@ -191,7 +332,7 @@ function initialsSubsequence(needle, haystack) {
 const HAN = /[\u3400-\u9fff\uf900-\ufaff]/
 
 /** 名字后面常带备注（王老师（辅导员）），备注里的音不该参与比对。 */
-function stripNotes(name) {
+export function stripNotes(name) {
   return String(name || '').replace(/（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]/g, ' ')
 }
 
@@ -283,7 +424,7 @@ export function matchNames(heard, candidates, options = {}) {
       for (const item of heardSyllables) {
         let best = null
         for (const candidate of syllables) {
-          const sim = syllableSim(item.syllable, candidate.syllable)
+          const sim = syllableSimilarity(item.syllable, candidate.syllable)
           if (!best || sim > best.sim) best = { sim, candidate }
         }
         if (best && best.sim >= 0.5) shared.push(`${item.char}→${best.candidate.char}`)

@@ -9,9 +9,33 @@
  * 台账是 WAL 模式，两边同时写由 busy_timeout 兜住。
  */
 
+import http from 'node:http'
+
 import { MODES, analyze, applyPlan, hasSnapshot, loadChats, saveSnapshot, undoSnapshot } from './whitelist-policy.js'
 
 const MAX_BODY_BYTES = 64 * 1024
+
+// 台账里的 name 是「上次刷新那一刻」的快照，改完备注不会自己变。
+// 页面每次读都顺手问一次 WCDA 的实时联系人接口（备注 > 昵称 > 微信号，
+// 由后端按实时库解析），拿实时显示名覆盖台账名，页面就不再停在旧备注上。
+// WCDA 没在跑 / 超时就静默回落到台账名，页面照常可用。
+const LIVE_CONTACTS_URL =
+  String(process.env.DSH_XIAOYIN_CONTACTS_URL || '').trim() ||
+  'http://127.0.0.1:10392/api/chat/contacts?include_friends=true&include_groups=true'
+// 同理，新加的会话（刚通过好友、刚被拉进群）在台账刷新的那一刻之前根本不在 chats 表里。
+// 页面每次读也顺手问一次实时会话列表，把台账里还没有的会话补登记进去：
+// 先以「0 份文件、默认纳入」的形式出现，下次台账刷新再补齐文件统计。
+const LIVE_SESSIONS_URL =
+  String(process.env.DSH_XIAOYIN_SESSIONS_URL || '').trim() ||
+  'http://127.0.0.1:10392/api/chat/sessions?limit=2000'
+const LIVE_NAMES_TTL_MS = 10_000
+const LIVE_NAMES_MISS_TTL_MS = 30_000
+const LIVE_NAMES_TIMEOUT_MS = 1_500
+const LIVE_SESSIONS_TTL_MS = 10_000
+const LIVE_SESSIONS_MISS_TTL_MS = 30_000
+
+let liveNamesState = { at: 0, names: null, ttl: 0, pending: null }
+let liveSessionsState = { at: 0, sessions: null, ttl: 0, pending: null }
 
 let sqlitePromise = null
 function loadSqlite() {
@@ -46,6 +70,162 @@ function normalizeChat(row) {
   }
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    const text = asText(value).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function fetchJson(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      const chunks = []
+      response.on('data', (chunk) => chunks.push(chunk))
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode}`))
+          return
+        }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+        } catch (error) {
+          reject(error)
+        }
+      })
+      response.on('error', reject)
+    })
+    request.on('timeout', () => request.destroy(new Error('timeout')))
+    request.on('error', reject)
+  })
+}
+
+/** 实时联系人列表 → username → 显示名（后端已经按 备注 > 昵称 > 微信号 排好优先级）。 */
+export function liveContactsToNames(payload) {
+  const names = new Map()
+  const contacts = payload && Array.isArray(payload.contacts) ? payload.contacts : []
+  for (const contact of contacts) {
+    if (!contact || typeof contact !== 'object') continue
+    const username = asText(contact.username).trim()
+    const name = firstText(contact.displayName, contact.remark, contact.nickname, contact.alias)
+    if (username && name && name !== username) names.set(username, name)
+  }
+  return names
+}
+
+/** 用实时显示名覆盖台账名。名字没变或实时接口没拿到就原样留着。 */
+export function applyLiveDisplayNames(chats, names) {
+  if (!Array.isArray(chats) || !names || names.size === 0) return 0
+  let applied = 0
+  for (const chat of chats) {
+    const live = names.get(chat.username)
+    if (live && live !== chat.name) {
+      chat.name = live
+      applied += 1
+    }
+  }
+  return applied
+}
+
+async function getLiveDisplayNames() {
+  const now = Date.now()
+  if (liveNamesState.names && now - liveNamesState.at < liveNamesState.ttl) return liveNamesState.names
+  if (liveNamesState.pending) return liveNamesState.pending
+  const task = fetchJson(LIVE_CONTACTS_URL, LIVE_NAMES_TIMEOUT_MS)
+    .then((payload) => liveContactsToNames(payload))
+    .catch(() => new Map())
+    .then((names) => {
+      liveNamesState = {
+        at: Date.now(),
+        names,
+        ttl: names.size > 0 ? LIVE_NAMES_TTL_MS : LIVE_NAMES_MISS_TTL_MS,
+        pending: null,
+      }
+      return names
+    })
+  liveNamesState.pending = task
+  return task
+}
+
+/** 实时会话列表 → username → 会话信息（名字、群标记、预览）。 */
+export function liveSessionsToMap(payload) {
+  const sessions = new Map()
+  const list = payload && Array.isArray(payload.sessions) ? payload.sessions
+    : payload && Array.isArray(payload.data) ? payload.data
+      : payload && Array.isArray(payload.items) ? payload.items
+        : []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const username = firstText(item.username, item.id).trim()
+    if (!username) continue
+    sessions.set(username, {
+      username,
+      name: firstText(item.name, item.displayName, username),
+      isGroup: Boolean(item.isGroup),
+      isEnterprise: Boolean(item.isEnterpriseGroup),
+      preview: asText(item.lastMessage).slice(0, 160),
+      unread: Number(item.unreadCount) || 0,
+    })
+  }
+  return sessions
+}
+
+/**
+ * 把实时会话里台账还没有的会话补登记进 chats（默认纳入、0 份文件）。
+ * 只 INSERT，不覆盖已有行；下次台账刷新再用真实统计补齐。
+ * @returns {number} 新登记条数
+ */
+export function insertMissingChats(db, sessions, names = null) {
+  if (!db || !sessions || sessions.size === 0) return 0
+  const hasRow = db.prepare('SELECT 1 FROM chats WHERE username = ? LIMIT 1')
+  const insert = db.prepare(`
+    INSERT INTO chats (username, name, is_group, is_enterprise, excluded, pinned, note,
+                       last_preview, unread, last_message_raw, last_seen_ts, updated_at)
+    VALUES (?, ?, ?, ?, 0, 0, '', ?, ?, ?, ?, ?)
+  `)
+  const now = Math.floor(Date.now() / 1000)
+  let added = 0
+  for (const [username, session] of sessions) {
+    if (hasRow.get(username)) continue
+    const live = names && names.get(username)
+    const name = firstText(live, session.name, username)
+    insert.run(
+      username,
+      name,
+      session.isGroup ? 1 : 0,
+      session.isEnterprise ? 1 : 0,
+      session.preview,
+      session.unread,
+      session.preview,
+      now,
+      now,
+    )
+    added += 1
+  }
+  return added
+}
+
+async function getLiveSessions() {
+  const now = Date.now()
+  if (liveSessionsState.sessions && now - liveSessionsState.at < liveSessionsState.ttl) return liveSessionsState.sessions
+  if (liveSessionsState.pending) return liveSessionsState.pending
+  const task = fetchJson(LIVE_SESSIONS_URL, LIVE_NAMES_TIMEOUT_MS)
+    .then((payload) => liveSessionsToMap(payload))
+    .catch(() => new Map())
+    .then((sessions) => {
+      liveSessionsState = {
+        at: Date.now(),
+        sessions,
+        ttl: sessions.size > 0 ? LIVE_SESSIONS_TTL_MS : LIVE_SESSIONS_MISS_TTL_MS,
+        pending: null,
+      }
+      return sessions
+    })
+  liveSessionsState.pending = task
+  return task
+}
+
 export function countChats(chats) {
   const groups = chats.filter((chat) => chat.isGroup)
   const directs = chats.filter((chat) => !chat.isGroup)
@@ -72,9 +252,12 @@ export async function listChats(dbPath) {
   const db = new DatabaseSync(dbPath)
   try {
     db.exec('PRAGMA busy_timeout = 3000')
+    const liveNames = await getLiveDisplayNames()
+    const addedLive = insertMissingChats(db, await getLiveSessions(), liveNames)
     const rows = db.prepare(LIST_SQL).all()
     const chats = rows.map(normalizeChat)
-    return { counts: countChats(chats), chats }
+    const liveNamesApplied = applyLiveDisplayNames(chats, liveNames)
+    return { counts: countChats(chats), chats, liveNamesApplied, addedLive }
   } finally {
     db.close()
   }

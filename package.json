@@ -22,6 +22,8 @@
     "agents/**",
     "learning.js",
     "pinyin-match.js",
+    "name-resolver.js",
+    "courses.js",
     "client.js",
     "autostart.js",
     "lease.js",

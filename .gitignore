@@ -48,3 +48,6 @@ docs/订单文件来源_*.md
 # 本地备份文件（改桥/改工具前手工复制的 .bak-日期）
 *.bak-*
 tools/_ui_probe/*.png
+
+# 交接用的源码打包（内容与仓库同名文件重复，且是二进制，不进仓库）
+endpoint-test-handoff.zip

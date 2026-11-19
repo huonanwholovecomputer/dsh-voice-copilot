@@ -67,6 +67,13 @@ def _pace(seconds: float, floor: float = 0.0) -> float:
     return max(floor, seconds * STEP_SCALE)
 
 
+# 店主 2026-11-18：「微信搜索结束之后粘贴内容的时候粘贴地有点快，延迟 200 毫秒」。
+# 第 3 步是 0.12s 小步轮询，左栏一变就返回——那一刻会话刚切过去、输入框还没
+# 拿到焦点，紧接着 Ctrl+V 会贴空、或者把正文粘进正在关闭的搜索框。
+# 这是「等输入框接住焦点」的固定等待，按店主说的原样 200ms，不跟 STEP_SCALE 缩放。
+PASTE_SETTLE = 0.2
+
+
 # ---------------------------------------------------------------------------
 # SendInput：40 字节的 INPUT（x64）
 # ---------------------------------------------------------------------------
@@ -535,11 +542,21 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
         return result
 
     # 4. 写剪贴板 + Ctrl+V
+    #    搜索面板刚关不等于输入框已经能接字：第 3 步确认一过就粘贴会「贴得太快」，
+    #    先让微信把焦点落到输入框（固定 200ms，见 PASTE_SETTLE）。
+    time.sleep(PASTE_SETTLE)
     if not set_clipboard(text):
         result.update(state="failed", reason="写剪贴板失败")
         return result
     chord(VK_CONTROL, VK_V)
-    time.sleep(_pace(0.9, 0.45))
+    # 店主 2026-11-18：「粘贴完 → 取 watermark」这段间隔偏大。
+    # 两处收紧：① watermark 只读数据库、与粘贴无关，趁这会儿先取掉（两次本地 HTTP），
+    # 不再让它在「睡完 0.45s」之后再串进关键路径；② 正文是一次性塞进输入框的，
+    # 0.2s 足够渲染出来，不必等满 0.45s。
+    # 顺带把 username 只解析一次，第 6 步直接复用（少一次本地 HTTP）。
+    who = "" if dry_run else _resolve_username(to)
+    before = watermark(who) if who else 0
+    time.sleep(_pace(0.4, 0.2))
     mark("4-pasted")
 
     if dry_run:
@@ -548,7 +565,6 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
         return result
 
     # 5. 回车发送
-    before = watermark(_resolve_username(to))
     key(VK_RETURN)
     time.sleep(_pace(1.0, 0.5))
     mark("5-enter-sent")
@@ -556,7 +572,7 @@ def send_text(to: str, text: str, *, dry_run: bool = False,
     # 6. 发送后核对（2026-11-10 店主原话：「不用数据库读这个步骤」）
     #    按键链路走完就算发出：数据库只做一次很短的顺手核对，
     #    读不到也不改判定，不再返回 maybe 让店主盯着窗口等落库。
-    confirmed = find_sent(_resolve_username(to), text, before, timeout=3.0)
+    confirmed = find_sent(who, text, before, timeout=3.0)
     mark("6-confirmed", confirmed)
     result.update(
         state="sent",
