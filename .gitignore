@@ -1,53 +1,34 @@
-# 本机配置：从示例文件复制后自己填，不进仓库
-app/config.json
+# ── 本机配置与运行时（每台机器各一份，不进仓库）─────────────────────────
 cordis.patch.yml
-
-# 模型（唤醒词 33 MB + 识别模型数百 MB），换机器自己拷
-models/
-
-# 本机记忆与运行状态
-.mnemon/
+tray-app/app/config.json
+tray-app/app/app.pid
+tray-app/app/_shots/
+tray-app/desktop/debug.log
 *.log
-app.pid
-
-# Python 运行时产物
 __pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Electron 浮窗的依赖与临时产物（desktop/ 源码要进仓库，node_modules 不要）
-desktop/node_modules/
-desktop/dist/
-# 本机为解析 @deepseek-ai/schemastery 建的 junction，不进仓库
 node_modules/
 
-# 调试截图、录屏、窗口枚举记录（含本机画面）
-app/_shots/
-tools/*.png
-tools/*.bmp
-tools/_ws.txt
+# ── 大文件：模型与音频不进仓库 ───────────────────────────────────────
+tray-app/models/
 
-# 私有业务 preset：只放本机，不进公开仓库（可公开的骨架见 presets/example-assistant/）
-presets/private-*/
+# ── 私有数据：人设预设、学习记录、mnemon 记忆 ────────────────────────
+xiaoyin-persona/presets/private-*/
+xiaoyin-persona/learning/
+.mnemon/
 
-# 学习记录：小印每轮的思考/工具调用/回复，含用户原话（已基础脱敏），属本机运行数据
-learning/
-# 临时分析脚本、解包产物
+# ── 本机私有配置与学到的状态（模板见 *.example.*）────────────────────
+xiaoyin-persona/tools/local_config.py
+xiaoyin-persona/tools/learn_state.json
+xiaoyin-persona/tools/order-samples.jsonl
+
+# ── 调试产物：截图、临时文件、备份 ──────────────────────────────────
+xiaoyin-persona/tools/_shots/
+xiaoyin-persona/tools/*.png
+xiaoyin-persona/tools/*.bmp
+xiaoyin-persona/tools/_ui_probe/*.png
 .tmp-*
-
-# 本机私有配置：真实姓名、真实群名、台账/日志路径都在这里（模板见 tools/local_config.example.py）
-tools/local_config.py
-
-# pywinauto 探测时写在当前目录的日志
+*.bak-*
 @AutomationLog.txt
 
-# 内含真实人名/学号/群名的订单来源分析，属本机数据（口径可参考 docs/白名单策略.md）
-docs/订单文件来源_*.md
-
-# 本地备份文件（改桥/改工具前手工复制的 .bak-日期）
-*.bak-*
-tools/_ui_probe/*.png
-
-# 交接用的源码打包（内容与仓库同名文件重复，且是二进制，不进仓库）
-endpoint-test-handoff.zip
+# ── 含本机真实订单数据的文档 ─────────────────────────────────────────
+xiaoyin-persona/docs/订单文件来源_*.md
