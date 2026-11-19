@@ -85,9 +85,8 @@
 | --- | --- |
 | [voice-assistant/docs/ARCHITECTURE.md](voice-assistant/docs/ARCHITECTURE.md) | 语音壳与智能体包的分层、P1/P2/P3 计划 |
 | [voice-assistant/docs/learning.md](voice-assistant/docs/learning.md) | learning 记录字段、脱敏、症状 → 改哪里 |
-| [voice-assistant/docs/语音采集_端点优化.md](voice-assistant/docs/语音采集_端点优化.md) | 滚动判主、机主锚定收尾、精确裁剪 |
 | [tray-app/desktop/CONTRACT.md](tray-app/desktop/CONTRACT.md) | 渲染层契约（`desktop/ui` ↔ `desktop/main.js`） |
-| [xiaoyin-persona/docs/](xiaoyin-persona/docs/) | 小印复盘（11-10 / 11-11 / 11-16）、白名单策略、生活域扩展、订单文件来源 |
+| [xiaoyin-persona/docs/](xiaoyin-persona/docs/) | 白名单策略等业务口径 |
 
 ## 开发
 

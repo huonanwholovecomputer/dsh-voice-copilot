@@ -81,8 +81,6 @@ python xiaoyin-persona/tools/learning_report.py --days 14
 
 | 文档 | 讲什么 |
 | --- | --- |
-| [docs/小印复盘_2026-11-10.md](docs/小印复盘_2026-11-10.md) | 10 次工具失败 → 提示词与工具改动 |
-| [docs/小印复盘_2026-11-11.md](docs/小印复盘_2026-11-11.md)、[docs/小印复盘_2026-11-16.md](docs/小印复盘_2026-11-16.md) | 同口径后续复盘 |
-| [docs/小印生活域扩展_2026-11-11.md](docs/小印生活域扩展_2026-11-11.md) | 把打印助手扩成「打印主业 + 生活杂事」，preset id 仍叫 `private-print-assistant` |
+| 复盘记录（11-10 / 11-11 / 11-16）、生活域扩展 | **不公开**：留在本机 archive（`dsh-voice-copilot-archive-20261119/private-docs/`） |
 | [docs/白名单策略.md](docs/白名单策略.md) | 按订单来源算 `chats.excluded` 的口径 |
 | [docs/订单文件来源_2026-10-28至11-06.md](docs/订单文件来源_2026-10-28至11-06.md) | 一批真实订单文件的统计（本机数据，gitignore） |
